@@ -2,7 +2,7 @@
 
 package rules
 
-import "github.com/lastpersonlabs/goredact/internal/rules/validators"
+import "github.com/baum-ai/goredact/internal/rules/validators"
 
 // Version identifies the built-in rule-set revision. It is the first 12
 // hex characters of the SHA-256 digest of the canonical serialization of

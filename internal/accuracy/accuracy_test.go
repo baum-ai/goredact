@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	redact "github.com/lastpersonlabs/goredact"
-	"github.com/lastpersonlabs/goredact/internal/accuracy"
+	redact "github.com/baum-ai/goredact"
+	"github.com/baum-ai/goredact/internal/accuracy"
 )
 
 const corpusChunkSize = 64 * 1024

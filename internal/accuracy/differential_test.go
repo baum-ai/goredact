@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lastpersonlabs/goredact/internal/accuracy"
+	"github.com/baum-ai/goredact/internal/accuracy"
 )
 
 // runScannerDifferential is the shared offline oracle harness. CI opts into

@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/baum-ai/goredact"
 	"github.com/klauspost/compress/zstd"
-	"github.com/lastpersonlabs/goredact"
 	"github.com/spf13/cobra"
 )
 

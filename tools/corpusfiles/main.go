@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/lastpersonlabs/goredact/internal/benchcorpus"
+	"github.com/baum-ai/goredact/internal/benchcorpus"
 )
 
 func main() {

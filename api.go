@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	core "github.com/lastpersonlabs/goredact/internal/goredact"
+	core "github.com/baum-ai/goredact/internal/goredact"
 )
 
 // DefaultChunkSize is the input buffer size used when Config.ChunkSize is

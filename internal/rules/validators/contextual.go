@@ -40,7 +40,7 @@
 // reports no match.
 package validators
 
-import "github.com/lastpersonlabs/goredact/internal/entropy"
+import "github.com/baum-ai/goredact/internal/entropy"
 
 // ---------------------------------------------------------------------------
 // Shared byte-class helpers

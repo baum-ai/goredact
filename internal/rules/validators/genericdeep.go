@@ -24,7 +24,7 @@
 // rule uses.
 package validators
 
-import "github.com/lastpersonlabs/goredact/internal/entropy"
+import "github.com/baum-ai/goredact/internal/entropy"
 
 // weakAssignmentGapMax bounds how many word/space/dot/hyphen characters
 // may separate a weak generic trigger from its assignment operator —

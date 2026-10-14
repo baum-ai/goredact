@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lastpersonlabs/goredact"
+	"github.com/baum-ai/goredact"
 )
 
 type dirOptions struct {

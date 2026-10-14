@@ -11,7 +11,7 @@ below, and the reference CLI and integrations use the pure-Go dependencies
 also recorded below.
 
 The `licence-check` CI job (`.github/workflows/ci.yml`) enforces this by
-scanning for copyright headers that do not attribute Last Person Labs and by
+scanning for copyright headers that do not attribute Baum AI and by
 failing the build if this file is missing.
 
 `TestThirdPartyRegisterMatchesGoMod` (`thirdparty_test.go`) enforces the
@@ -29,7 +29,7 @@ table derived from a third-party corpus), add an entry below **before**
 merging, and record the copied code's licence header here, in this file (see
 the Gitleaks entry below for the pattern), rather than embedding it in the
 local source file itself: the `licence-check` CI job scans every file except
-this one and `LICENSE` for non-"Last Person Labs" `Copyright` lines and fails
+this one and `LICENSE` for non-"Baum AI" `Copyright` lines and fails
 the build on a match, so a third-party header left in the local file would
 break CI. Each entry must record:
 

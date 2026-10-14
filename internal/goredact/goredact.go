@@ -6,8 +6,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/lastpersonlabs/goredact/internal/ahocorasick"
-	"github.com/lastpersonlabs/goredact/internal/rules"
+	"github.com/baum-ai/goredact/internal/ahocorasick"
+	"github.com/baum-ai/goredact/internal/rules"
 )
 
 // DefaultChunkSize is the input buffer size used when Config.ChunkSize is

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lastpersonlabs/goredact"
+	"github.com/baum-ai/goredact"
 )
 
 func TestDecodeAnnotationsArrayAndJSONL(t *testing.T) {

@@ -3,7 +3,7 @@
 //
 // It is invoked via the //go:generate directive in internal/rules/generate.go:
 //
-//	go run github.com/lastpersonlabs/goredact/tools/rulegen \
+//	go run github.com/baum-ai/goredact/tools/rulegen \
 //	    -specs ./specs -out ./zz_generated_rules.go -fixtures ./zz_generated_fixtures_test.go
 //
 // # Spec schema

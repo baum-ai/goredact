@@ -141,8 +141,8 @@ jobs:
             exit 1
           fi
 
-          # Look for copyright headers that are not attributed to Last Person
-          # Labs, outside of LICENSE/THIRD_PARTY.md and CI config itself
+          # Look for copyright headers that are not attributed to Baum AI,
+          # outside of LICENSE/THIRD_PARTY.md and CI config itself
           # (this check documents the pattern it looks for, which would
           # otherwise self-match).
           matches="$(grep -rIn \
@@ -150,10 +150,10 @@ jobs:
             --exclude-dir=.github \
             --exclude=LICENSE \
             --exclude=THIRD_PARTY.md \
-            "Copyright" . | grep -v "Last Person Labs" || true)"
+            "Copyright" . | grep -v "Baum AI" || true)"
 
           if [ -n "$matches" ]; then
-            echo "Found copyright headers not attributed to Last Person Labs:" >&2
+            echo "Found copyright headers not attributed to Baum AI:" >&2
             echo "$matches" >&2
             echo >&2
             echo "If this is vendored or adapted third-party code, record its" >&2

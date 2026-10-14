@@ -1,4 +1,4 @@
-module github.com/lastpersonlabs/goredact
+module github.com/baum-ai/goredact
 
 go 1.26.6
 

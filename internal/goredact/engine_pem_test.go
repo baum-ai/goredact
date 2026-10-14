@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lastpersonlabs/goredact/internal/rules/validators"
+	"github.com/baum-ai/goredact/internal/rules/validators"
 )
 
 // pemTestConfig wires validators.PEMPrivateKey as a custom rule. Builtins

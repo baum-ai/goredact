@@ -1,6 +1,6 @@
 package entropy
 
-import "github.com/lastpersonlabs/goredact/internal/ahocorasick"
+import "github.com/baum-ai/goredact/internal/ahocorasick"
 
 // substringPlaceholders are lowercase keywords that mark b as a
 // placeholder if they appear ANYWHERE in b (case-insensitively).
