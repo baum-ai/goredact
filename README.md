@@ -118,8 +118,8 @@ latency with `Config.DisableRules` when the stream is interactive.
 ## Install and use
 
 ```sh
-go get github.com/baum-ai/goredact@v0.1.0
-go install github.com/baum-ai/goredact/cmd/goredact@v0.1.0
+go get github.com/baum-ai/goredact@v0.2.0
+go install github.com/baum-ai/goredact/cmd/goredact@v0.2.0
 goredact stream --profile balanced < session.jsonl > session.redacted.jsonl
 goredact stream --zstd --stats - < session.jsonl > session.redacted.jsonl.zst
 goredact dir --report-format sarif --report-path findings.sarif ./workspace

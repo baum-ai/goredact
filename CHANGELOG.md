@@ -3,7 +3,7 @@
 All notable changes are documented here. This project follows semantic
 versioning.
 
-## Unreleased
+## v0.2.0 — 2026-10-14
 
 - **Breaking:** the module path is now `github.com/baum-ai/goredact`,
   following the GitHub org rename from `lastpersonlabs` to `baum-ai`.
