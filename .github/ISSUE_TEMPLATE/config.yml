@@ -1,7 +1,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/lastpersonlabs/goredact/security/policy
+    url: https://github.com/baum-ai/goredact/security/policy
     about: >
       Do not file a public issue for a real secret-leak vulnerability.
       Follow the private disclosure process in SECURITY.md instead.

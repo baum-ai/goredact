@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/baum-ai/goredact"
 	"github.com/klauspost/compress/zstd"
-	"github.com/lastpersonlabs/goredact"
 )
 
 type fakeClient struct {

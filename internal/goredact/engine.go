@@ -47,9 +47,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/lastpersonlabs/goredact/internal/ahocorasick"
-	"github.com/lastpersonlabs/goredact/internal/rules"
-	"github.com/lastpersonlabs/goredact/internal/span"
+	"github.com/baum-ai/goredact/internal/ahocorasick"
+	"github.com/baum-ai/goredact/internal/rules"
+	"github.com/baum-ai/goredact/internal/span"
 )
 
 // maxConsecutiveZeroReads bounds how many times in a row a misbehaving

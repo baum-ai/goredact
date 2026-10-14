@@ -16,10 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	redact "github.com/lastpersonlabs/goredact"
-	"github.com/lastpersonlabs/goredact/internal/ahocorasick"
-	"github.com/lastpersonlabs/goredact/internal/benchcorpus"
-	"github.com/lastpersonlabs/goredact/internal/rules"
+	redact "github.com/baum-ai/goredact"
+	"github.com/baum-ai/goredact/internal/ahocorasick"
+	"github.com/baum-ai/goredact/internal/benchcorpus"
+	"github.com/baum-ai/goredact/internal/rules"
 )
 
 type result struct {

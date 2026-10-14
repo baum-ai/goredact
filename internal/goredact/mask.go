@@ -1,6 +1,6 @@
 package goredact
 
-import "github.com/lastpersonlabs/goredact/internal/span"
+import "github.com/baum-ai/goredact/internal/span"
 
 // MaskStrategy selects how each confirmed secret span is replaced in the
 // output. The zero value is MaskFixedMarker, so the zero Config keeps the

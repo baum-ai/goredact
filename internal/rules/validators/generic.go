@@ -47,7 +47,7 @@
 // canonical number to reference and keep in sync.
 package validators
 
-import "github.com/lastpersonlabs/goredact/internal/entropy"
+import "github.com/baum-ai/goredact/internal/entropy"
 
 // FalsePositiveBudgetPerTenMiB is the accuracy target for the balanced-
 // profile generic contextual rules in this file: fewer than this many

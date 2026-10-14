@@ -3,7 +3,7 @@ package goredact
 import (
 	"sort"
 
-	"github.com/lastpersonlabs/goredact/internal/rules"
+	"github.com/baum-ai/goredact/internal/rules"
 )
 
 // RuleInfo describes one built-in or custom detection rule for

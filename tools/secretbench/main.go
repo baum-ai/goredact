@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lastpersonlabs/goredact"
+	"github.com/baum-ai/goredact"
 )
 
 type options struct {

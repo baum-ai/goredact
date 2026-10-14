@@ -11,8 +11,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/baum-ai/goredact"
 	"github.com/klauspost/compress/zstd"
-	"github.com/lastpersonlabs/goredact"
 )
 
 const (

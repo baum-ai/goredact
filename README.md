@@ -1,7 +1,7 @@
 # goredact
 
-[![CI](https://github.com/lastpersonlabs/goredact/actions/workflows/ci.yml/badge.svg)](https://github.com/lastpersonlabs/goredact/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/lastpersonlabs/goredact.svg)](https://pkg.go.dev/github.com/lastpersonlabs/goredact)
+[![CI](https://github.com/baum-ai/goredact/actions/workflows/ci.yml/badge.svg)](https://github.com/baum-ai/goredact/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/baum-ai/goredact.svg)](https://pkg.go.dev/github.com/baum-ai/goredact)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 `goredact` is a pure-Go, bounded-memory **redaction filter**: it reads a byte
@@ -118,8 +118,8 @@ latency with `Config.DisableRules` when the stream is interactive.
 ## Install and use
 
 ```sh
-go get github.com/lastpersonlabs/goredact@v0.1.0
-go install github.com/lastpersonlabs/goredact/cmd/goredact@v0.1.0
+go get github.com/baum-ai/goredact@v0.1.0
+go install github.com/baum-ai/goredact/cmd/goredact@v0.1.0
 goredact stream --profile balanced < session.jsonl > session.redacted.jsonl
 goredact stream --zstd --stats - < session.jsonl > session.redacted.jsonl.zst
 goredact dir --report-format sarif --report-path findings.sarif ./workspace

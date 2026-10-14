@@ -5,6 +5,12 @@ versioning.
 
 ## Unreleased
 
+- **Breaking:** the module path is now `github.com/baum-ai/goredact`,
+  following the GitHub org rename from `lastpersonlabs` to `baum-ai`.
+  Importers must update their import paths and `go.mod` requirements; the
+  old path stays at v0.1.0 and receives no further releases. The copyright
+  holder is now Baum AI and the security contact is
+  `security@usebaum.com`.
 - Documentation: README repositioned around the filter-versus-auditor
   distinction, with explicit guidance on when to reach for a repository
   auditor instead, the measured streaming latency bound, and a benchmark

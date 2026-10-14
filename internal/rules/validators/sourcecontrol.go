@@ -21,7 +21,7 @@ package validators
 import (
 	"bytes"
 
-	"github.com/lastpersonlabs/goredact/internal/entropy"
+	"github.com/baum-ai/goredact/internal/entropy"
 )
 
 // isTokenChar reports whether c is a valid character in the URL-safe
