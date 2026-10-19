@@ -96,8 +96,8 @@ SOFTWARE.
 ### klauspost/compress
 
 - Source URL: https://github.com/klauspost/compress
-- Release: v1.20.1
-- Licence file: https://github.com/klauspost/compress/blob/v1.20.1/LICENSE
+- Release: v1.20.3
+- Licence file: https://github.com/klauspost/compress/blob/v1.20.3/LICENSE
 - Licence: mixed by file. The module's primary terms are BSD-3-Clause;
   `gzhttp/*` is Apache-2.0; `s2/cmd/internal/readahead/*` and
   `s2/cmd/internal/filepathx/*` are MIT; and `snappy/*` plus
