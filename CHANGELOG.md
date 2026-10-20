@@ -40,9 +40,11 @@ versioning.
   context END closes both. Both key rules' lookbehind grows from 0 to 2
   bytes to see the trigger line's marker.
 - **Fixed:** RFC 4880 armor headers after a BEGIN line (`Version: GnuPG
-  v1.4.11 (GNU/Linux)`, `Comment: ...`) are taken whole, so their bytes no
-  longer end the scan before the key body; GnuPG 1.x keys were not
-  detected at all.
+  v1.4.11 (GNU/Linux)`, `Comment: "Alice" <alice@example.com>`) are taken
+  whole, so their bytes no longer end the scan before the key body; GnuPG
+  1.x keys were not detected at all. Up to 32 header lines of up to 1 KiB
+  are accepted, indented (as in a YAML block) or on diff lines, with ": ",
+  ":\t" or a bare ':' after the key, raw or JSON-escaped.
 - **Fixed:** the other checks anchored on what precedes a trigger accept a
   diff removal marker. `command-line-password-flag` rejected
   `---password=...` and `openai-legacy-key` and `deepseek-api-key` rejected

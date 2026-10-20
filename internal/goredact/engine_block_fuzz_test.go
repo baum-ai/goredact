@@ -11,6 +11,15 @@ import (
 
 var blockFuzzLines = blockTestLines(77, 300)
 
+// blockFuzzMax bounds a FuzzEngineBlocks input: several windows and chunks
+// long, short enough that one execution (four engine runs and a whole-input
+// scan per checked trigger) stays well inside the fuzzer's deadline.
+const blockFuzzMax = 160 << 10
+
+// blockFuzzTriggers bounds the triggers per rule whose whole-input span
+// FuzzEngineBlocks checks, spread evenly over the input.
+const blockFuzzTriggers = 48
+
 // blockFuzzInput expands fuzz bytes into private-key-shaped text: BEGIN and
 // END lines, PPK headers, runs of body lines, prose, separators, gaps and
 // diff markers, so the engine sees nested, interleaved, unterminated and
@@ -70,7 +79,7 @@ func blockFuzzInput(data []byte) []byte {
 		case 21:
 			b.WriteString(line())
 		}
-		if b.Len() > 400<<10 {
+		if b.Len() > blockFuzzMax {
 			break
 		}
 	}
@@ -116,14 +125,19 @@ func FuzzEngineBlocks(f *testing.F) {
 			{"-----BEGIN ", validators.PEMPrivateKeyBegin},
 			{"PuTTY-User-Key-File-", validators.PuTTYPrivateKeyBegin},
 		} {
+			var starts []int
 			for off := 0; ; {
 				i := bytes.Index(in[off:], []byte(rule.trigger))
 				if i < 0 {
 					break
 				}
-				ts := off + i
+				starts = append(starts, off+i)
+				off += i + len(rule.trigger)
+			}
+			step := max(1, (len(starts)+blockFuzzTriggers-1)/blockFuzzTriggers)
+			for k := 0; k < len(starts); k += step {
+				ts := starts[k]
 				te := ts + len(rule.trigger)
-				off = te
 				ws := max(ts-lookbehind, 0)
 				wEnd := min(te+lookahead, len(in))
 				if _, _, _, _, ok := rule.begin(in[ws:wEnd], ts-ws, te-ws, wEnd < te+lookahead); !ok {

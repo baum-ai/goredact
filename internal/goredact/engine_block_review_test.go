@@ -198,6 +198,34 @@ func TestEngineDiffSidesKeepTheirOwnEnd(t *testing.T) {
 	}
 }
 
+// TestEngineDiffEndAtWindowStart: a "+-----END" line of an added key does
+// not close a removed (or context) key around it even when a continuation
+// window starts between the "+", which is base64, and the END marker. The
+// sweep moves the key across every alignment of the 4 KiB window grid.
+func TestEngineDiffEndAtWindowStart(t *testing.T) {
+	body := blockTestLines(30, 400)
+	tail := blockTestLines(31, 100)
+	e := mustEngine(t, Config{})
+	for _, trigger := range []string{"-", " "} {
+		for pad := 0; pad < 4400; pad++ {
+			var b strings.Builder
+			b.WriteString(strings.Repeat("x", pad) + "\n@@ -1,500 +1,1 @@\n" + trigger + "-----BEGIN RSA PRIVATE KEY-----\n")
+			for _, l := range body {
+				b.WriteString("-" + l + "\n")
+			}
+			b.WriteString("+-----END RSA PRIVATE KEY-----\n")
+			for _, l := range tail {
+				b.WriteString("-" + l + "\n")
+			}
+			b.WriteString("------END RSA PRIVATE KEY-----\n")
+			out, _ := redactAll(t, e, strings.NewReader(b.String()))
+			if n := blockLeaks(out, append(append([]string{}, body...), tail...)); n > 0 {
+				t.Fatalf("trigger %q, pad %d: %d key lines survive", trigger, pad, n)
+			}
+		}
+	}
+}
+
 // TestEngineArmorHeaders: RFC 4880 armor headers with bytes the body
 // grammar refuses do not hide the key.
 func TestEngineArmorHeaders(t *testing.T) {
@@ -216,5 +244,33 @@ func TestEngineArmorHeaders(t *testing.T) {
 				assertBlockMasked(t, blockTestDiff("+", key), body)
 			})
 		}
+	}
+
+	body := blockTestLines(32, 300)
+	armored := func(headers []string, indent, marker string) string {
+		lines := append([]string{"-----BEGIN PGP PRIVATE KEY BLOCK-----"}, headers...)
+		lines = append(append(append(lines, ""), body...), "=Tx4q", "-----END PGP PRIVATE KEY BLOCK-----")
+		for i := range lines {
+			lines[i] = marker + indent + lines[i]
+		}
+		return strings.Join(lines, "\n") + "\n"
+	}
+	version := "Version: GnuPG v1.4.11 (GNU/Linux)"
+	many := []string{version}
+	for i := 1; i < 32; i++ {
+		many = append(many, fmt.Sprintf("Comment: line %d (see https://example.org/x.y)", i))
+	}
+	quoted := armored([]string{`Comment: "Alice Smith" <alice@example.com>`}, "", "")
+	for name, input := range map[string]string{
+		"yaml indented":              "k: |\n" + armored([]string{version}, "  ", "") + "other: 1\n",
+		"yaml indented on + lines":   "@@ -0,0 +1,400 @@\n+k: |\n" + armored([]string{version}, "  ", "+"),
+		"quoted raw value":           quoted,
+		"quoted value, JSON-escaped": `{"k":"` + strings.ReplaceAll(strings.ReplaceAll(quoted, `"`, `\"`), "\n", `\n`) + `"}` + "\n",
+		"tab after the colon":        armored([]string{"Comment:\tAlice (work)"}, "", ""),
+		"no space after the colon":   armored([]string{"Comment:Alice (work)"}, "", ""),
+		"32 headers":                 armored(many, "", ""),
+		"1 KiB value":                armored([]string{"Comment: " + strings.Repeat("a.", 512)}, "", ""),
+	} {
+		t.Run(name, func(t *testing.T) { assertBlockMasked(t, input, body) })
 	}
 }

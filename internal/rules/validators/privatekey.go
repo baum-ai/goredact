@@ -64,7 +64,10 @@ package validators
 //     diff mode, in which each version's section is counted separately (see
 //     ppkScanner).
 
-import "bytes"
+import (
+	"bytes"
+	"strings"
+)
 
 const (
 	// pemLabelMax bounds a BEGIN/END label scan; RFC 7468 labels are far
@@ -98,8 +101,12 @@ const (
 
 	// pemArmorLines and pemArmorLineMax bound the RFC 4880 armor headers
 	// skipped after a BEGIN line.
-	pemArmorLines   = 16
-	pemArmorLineMax = 512
+	pemArmorLines   = 32
+	pemArmorLineMax = 1024
+
+	// pemArmorIndentMax bounds the indentation accepted before an armor
+	// header line (a key in an indented YAML or Markdown block).
+	pemArmorIndentMax = 16
 
 	// ppkMaxCount bounds the "Private-Lines: N" count: 1-5 digits.
 	ppkMaxCount = 99999
@@ -237,32 +244,46 @@ func pemLineBreak(window []byte, pos int, escaped bool) int {
 
 // pemSkipArmorHeaders skips RFC 4880 armor headers ("Key: Value" lines)
 // following the BEGIN line, which ends at body. A value may hold bytes the
-// body grammar refuses ("Version: GnuPG v1.4.11 (GNU/Linux)"), so the lines
-// are taken whole. Each line may open with marker (a diff line). It returns
-// the offset of the line break ending the last header line, or body when
-// there is none.
+// body grammar refuses ("Version: GnuPG v1.4.11 (GNU/Linux)",
+// `Comment: "Alice" <alice@example.com>`), so the lines are taken whole.
+// A header line may open with the BEGIN line's diff marker (required when
+// there is one, else optional) and an indentation of up to
+// pemArmorIndentMax spaces or tabs, as in an indented YAML block; the
+// separator after the key may be ": ", ":\t" or a bare ':'. In a
+// JSON-escaped key (lines broken by `\n`) a value ends at a bare '"' and
+// may hold the escapes `\"`, `\\`, `\t` and `\/`. It returns the offset of
+// the line break ending the last header line, or body when there is none.
 func pemSkipArmorHeaders(window []byte, body int, marker byte) int {
 	escaped := pemHasAt(window, body, pemEscLF) || pemHasAt(window, body, []byte(`\r\n`))
 	end := body
 	for range pemArmorLines {
 		p := end + pemLineBreak(window, end, escaped)
-		if p == end {
+		if p == end || p >= len(window) {
 			return end
 		}
-		if marker != 0 {
-			if p >= len(window) || window[p] != marker {
-				return end
-			}
+		switch {
+		case marker != 0 && window[p] != marker:
+			return end
+		case marker != 0 || window[p] == '+' || window[p] == '-':
+			p++
+		}
+		for indent := 0; p < len(window) && indent < pemArmorIndentMax && (window[p] == ' ' || window[p] == '\t'); indent++ {
 			p++
 		}
 		key := p
 		for p < len(window) && p-key < pemLabelMax && (isASCIILetter(window[p]) || isDigit(window[p]) || window[p] == '-' && p > key) {
 			p++
 		}
-		if p == key || !pemHasAt(window, p, []byte(": ")) {
+		if p == key || p >= len(window) || window[p] != ':' {
 			return end
 		}
-		p += 2
+		p++
+		switch {
+		case p < len(window) && (window[p] == ' ' || window[p] == '\t'):
+			p++
+		case escaped && pemHasAt(window, p, []byte(`\t`)):
+			p += 2
+		}
 		valueStart := p
 		for {
 			if p >= len(window) || p-valueStart > pemArmorLineMax {
@@ -272,8 +293,16 @@ func pemSkipArmorHeaders(window []byte, body int, marker byte) int {
 				break
 			}
 			c := window[p]
-			if c < 0x20 && c != '\t' || c == 0x7f || c == '"' || escaped && c == '\\' {
+			switch {
+			case c < 0x20 && c != '\t' || c == 0x7f:
 				return end
+			case escaped && c == '"':
+				return end // the end of the JSON string
+			case escaped && c == '\\':
+				if p+1 >= len(window) || strings.IndexByte(`"\t/`, window[p+1]) < 0 {
+					return end
+				}
+				p++
 			}
 			p++
 		}
@@ -297,6 +326,7 @@ const (
 	pemStateDiff   = 1 << 20 // the block is on diff lines; sides are tracked
 	pemStateInRun  = 1 << 18 // resume inside a backslash run
 	pemStateLineNL = 1 << 19 // the resume point starts a line
+	pemStatePrevAt = 21      // two bits: versions of a diff marker right before the resume point
 )
 
 // pemScanner is the PEM body state machine. A "run" is a maximal sequence
@@ -310,6 +340,7 @@ type pemScanner struct {
 	diff       bool   // the block is on diff lines
 	sides      uint8  // with diff, the file versions whose END is still to come
 	nl         bool   // offset 0 of the window starts a line
+	prev       uint8  // versions of a diff marker opening a line right before offset 0
 	lastB64End int    // one past the last base64 byte seen, or -1
 	snap       uint64 // the state at lastB64End, for resuming there
 }
@@ -334,8 +365,9 @@ func resumePEM(state uint64) pemScanner {
 		diff:       state&pemStateDiff != 0,
 		sides:      uint8(state>>16) & (diffOld | diffNew),
 		nl:         state&pemStateLineNL != 0,
+		prev:       uint8(state>>pemStatePrevAt) & (diffOld | diffNew),
 		lastB64End: 0,
-		snap:       state &^ (pemStateInRun | pemStateLineNL),
+		snap:       state &^ (pemStateInRun | pemStateLineNL | 3<<pemStatePrevAt),
 	}
 }
 
@@ -348,17 +380,37 @@ func (s *pemScanner) startsLineAt(window []byte, pos int) bool {
 	return pos > 0 && pos <= len(window) && window[pos-1] == '\n'
 }
 
+// markerBefore reports the versions of the diff marker opening the line
+// right before window offset i, or 0 when the byte before i is not one.
+func (s *pemScanner) markerBefore(window []byte, i int) uint8 {
+	if i == 0 {
+		return s.prev
+	}
+	if i > 0 && i <= len(window) && s.startsLineAt(window, i-1) {
+		return diffSides(window[i-1])
+	}
+	return 0
+}
+
+// resumeAt completes st, a scanner state for resuming at pos, with what the
+// next window cannot see: whether pos starts a line, and the diff marker
+// right before it (a "+" before "-----END" is base64, so a resume point can
+// fall between them).
+func (s *pemScanner) resumeAt(window []byte, pos int, st uint64) (int, uint64) {
+	st &^= pemStateLineNL | 3<<pemStatePrevAt
+	if s.startsLineAt(window, pos) {
+		st |= pemStateLineNL
+	}
+	return pos, st | uint64(s.markerBefore(window, pos))<<pemStatePrevAt
+}
+
 // openAt reports where an open block resumes when the scan stopped at pos:
 // at the last base64 byte if it is close enough behind, else at pos.
 func (s *pemScanner) openAt(window []byte, pos int) (resume int, state uint64) {
 	if s.lastB64End > 0 && pos-s.lastB64End <= pemResumeLag {
-		return s.lastB64End, s.snap
+		return s.resumeAt(window, s.lastB64End, s.snap)
 	}
-	st := s.state()
-	if s.startsLineAt(window, pos) {
-		st |= pemStateLineNL
-	}
-	return pos, st
+	return s.resumeAt(window, pos, s.state())
 }
 
 // closeRun ends the run in progress and reports whether the scan may go
@@ -452,8 +504,8 @@ func (s *pemScanner) scan(window []byte, i, limit int) (pos int, stop pemStop) {
 				i++
 				continue
 			}
-			if s.diff && i > 0 && s.startsLineAt(window, i-1) {
-				if line := diffSides(window[i-1]); line != 0 {
+			if s.diff {
+				if line := s.markerBefore(window, i); line != 0 {
 					if s.sides&line == 0 {
 						// The END of the other file version's key.
 						i++
@@ -557,7 +609,7 @@ func PEMPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (star
 // boundary near it.
 func (s *pemScanner) pemOpen(window []byte, pos int) (resume int, state uint64) {
 	if pos == len(window) && len(window) > 0 && window[pos-1] == '\\' {
-		return pos, s.state() | pemStateInRun
+		return s.resumeAt(window, pos, s.state()|pemStateInRun)
 	}
 	return s.openAt(window, pos)
 }
