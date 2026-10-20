@@ -3,7 +3,7 @@
 All notable changes are documented here. This project follows semantic
 versioning.
 
-## Unreleased
+## v0.3.0 — 2026-10-20
 
 - **Fixed:** private keys are masked to their end, however long. The
   `pem-private-key` and `putty-private-key` rules read at most 16 KiB past
