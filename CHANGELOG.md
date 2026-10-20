@@ -3,6 +3,44 @@
 All notable changes are documented here. This project follows semantic
 versioning.
 
+## Unreleased
+
+- **Fixed:** private keys are masked to their end, however long. The
+  `pem-private-key` and `putty-private-key` rules read at most 16 KiB past
+  their trigger, so a longer key — a large PGP private key block, for one —
+  kept its tail unmasked. Both rules still decide within that window, then
+  follow a key window by window to its END marker (or the end of its
+  Private-Lines section) and mask it as one finding. An unterminated key is
+  masked through its last body byte at the end of input. Memory stays
+  bounded and the work linear: a key longer than the buffer has its
+  interior discarded, and a key marker nested in an open key cannot start a
+  second scan. Output inside a key that runs past the window is held until
+  the key ends. Callers that bound how far a span reaches past its trigger
+  (for example to cut text after redaction) must treat key blocks as
+  unbounded; detection still needs no more than 16 KiB past the trigger.
+- **Fixed:** PuTTY keys in unified diff patches. `putty-private-key`
+  required `Private-Lines:` at the start of a line, so a key on the `+`
+  lines of a patch was never detected. A header behind one diff marker
+  (`+`, `-` or space) now reads marked body lines and counts the old and
+  new file versions separately, so added, removed and changed keys are
+  masked and their public lines kept. PEM keys in patches were already
+  detected and are now masked to their end too.
+- **Fixed:** the other checks anchored on what precedes a trigger accept a
+  diff removal marker. `command-line-password-flag` rejected
+  `---password=...` and `openai-legacy-key` and `deepseek-api-key` rejected
+  a `-` before `sk-`; a `-` that opens a line now counts as a boundary, so
+  a flag or key starting a removed line is masked. The two key rules'
+  lookbehind grows from 1 to 2 bytes.
+- Under `MaskLengthPreserving` and `MaskFormatPreserving`, the interior of
+  a key longer than `ChunkSize` is emitted as `*` bytes: masked, but its
+  shape depends on the chunk size.
+- Internal: block rules (`rules.Block`, the rulegen spec field `block`) and
+  their engine continuation; the rule-set version changes. New benchmark
+  `BenchmarkRedactLongKeyBlocks` (570 MB/s on input that is mostly 64 KiB
+  keys, against 430 MB/s for v0.2.0, which masked only their first 16 KiB;
+  the quiet and noisy benchmarks are unchanged) and fuzz target
+  `FuzzBlockChainMatchesWholeScan`.
+
 ## v0.2.0 — 2026-10-14
 
 - **Breaking:** the module path is now `github.com/baum-ai/goredact`,

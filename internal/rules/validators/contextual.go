@@ -588,8 +588,10 @@ func isBareCLIValueChar(c byte) bool {
 // whitespace: anything else means the flag name continues
 // ("--password-file", "--token-url") and there is no match. The byte
 // before the trigger must not be '-' or alphanumeric ("---password",
-// "x--token" are not flags). A bare (unquoted) value must not start with
-// '-': that is the next flag, not a value ("--password --prompt").
+// "x--token" are not flags), except for a '-' that opens the line: that is
+// the removal marker of a unified diff line ("-" + "--password=..."). A
+// bare (unquoted) value must not start with '-': that is the next flag,
+// not a value ("--password --prompt").
 //
 // The value is either quoted (single/double/backtick, tolerating a
 // backslash-escaped opening quote for JSON-embedded command lines, via
@@ -601,7 +603,7 @@ func isBareCLIValueChar(c byte) bool {
 // machine-generated and should look random. Only the value is redacted.
 func CommandLinePasswordFlag(window []byte, trigStart, trigEnd int) (start, end int, ok bool) {
 	if trigStart > 0 {
-		if p := window[trigStart-1]; p == '-' || isAlnum(p) {
+		if p := window[trigStart-1]; p == '-' && !isDiffRemovalMarker(window, trigStart-1) || isAlnum(p) {
 			return 0, 0, false
 		}
 	}

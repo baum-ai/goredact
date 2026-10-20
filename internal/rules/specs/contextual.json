@@ -187,7 +187,8 @@
           "mysql -h db.prod.internal -u app --password=tR8kW3nQ7zXm2 app_db",
           "vault login --token=hvs.9kQ3vR7wL4mN2xT6bF0jH5cD",
           "deploy --api-key 'Zp8kQ3vR7wL4mN2xT6bF9jH0' --env prod",
-          "{\"cmd\":\"pg_restore --passwd=Xq7Lm2Vt9zR4 -d app\"}"
+          "{\"cmd\":\"pg_restore --passwd=Xq7Lm2Vt9zR4 -d app\"}",
+          "@@ -3,2 +3,2 @@\n---password=tR8kW3nQ7zXm2\n+--password-file=/run/secrets/db\n"
         ],
         "nomatch": [
           "pg_dump --password-file /run/secrets/pgpass -h db",
@@ -197,7 +198,8 @@
           "docs: use --api-key <your-key> to authenticate",
           "login --secret changeme --user svc",
           "deploy --token ${CLOUDFLARE_TUNNEL_TOKEN:?Set token}",
-          "mysql -u root --password=hunter2 mydb"
+          "mysql -u root --password=hunter2 mydb",
+          "mysql ----password=tR8kW3nQ7zXm2 app_db"
         ]
       }
     }

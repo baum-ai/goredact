@@ -115,6 +115,13 @@ The default 16 KiB comes entirely from the two private-key block rules; the
 median built-in rule window is 86 bytes. Trade block-key detection for
 latency with `Config.DisableRules` when the stream is interactive.
 
+The one exception is a private key itself. Those rules decide within their
+16 KiB window, but mask a key to its end marker however long it is (an
+unterminated key, through its last body byte at the end of input), so the
+bytes of a key that runs past the window are held until its end is seen.
+Memory stays bounded: a key longer than the buffer has its interior
+discarded, never buffered whole.
+
 ## Install and use
 
 ```sh
@@ -143,7 +150,9 @@ material.
 
 The built-in rules cover provider tokens (source control, cloud, AI, payment,
 messaging, and project management), authentication headers, contextual
-assignments, cookies, credentials in URLs, and private-key blocks. Fast,
+assignments, cookies, credentials in URLs, and private-key blocks. Private
+keys are masked whole, to their end marker, and are also found in unified
+diff patches, where every line opens with a `+`, `-` or space marker. Fast,
 balanced, and deep profiles trade detector coverage for cost; deep adds a
 broader-keyword, lower-confidence generic assignment heuristic on top of
 everything balanced already catches. See [`docs/PROFILES.md`](docs/PROFILES.md)

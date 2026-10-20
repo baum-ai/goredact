@@ -21,6 +21,7 @@ type genRule struct {
 	Confidence    string // "low" | "medium" | "high"
 	MaxLookbehind int
 	MaxLookahead  int
+	Block         *specBlock
 	Provenance    specProvenance
 	Fixtures      specFixtures
 }
@@ -58,6 +59,7 @@ func toGenRules(rules []specRule) []genRule {
 			Confidence:    r.Confidence,
 			MaxLookbehind: r.MaxLookbehind,
 			MaxLookahead:  r.MaxLookahead,
+			Block:         r.Block,
 			Provenance:    r.Provenance,
 			Fixtures:      r.Fixtures,
 		}
@@ -81,6 +83,12 @@ type canonicalRule struct {
 	Confidence    string             `json:"confidence"`
 	MaxLookbehind int                `json:"maxLookbehind"`
 	MaxLookahead  int                `json:"maxLookahead"`
+	Block         *canonicalBlock    `json:"block,omitempty"`
+}
+
+type canonicalBlock struct {
+	Begin  string `json:"begin"`
+	Extend string `json:"extend"`
 }
 
 type canonicalTrigger struct {
@@ -91,7 +99,7 @@ type canonicalTrigger struct {
 // computeVersion derives the rules.Version string from rules, which must
 // already be sorted by ID. The result is stable across runs for the same
 // rule content and changes whenever any rule's ID, name, triggers,
-// validator, profile, confidence, or window bounds change.
+// validator, profile, confidence, window bounds, or block functions change.
 func computeVersion(rules []genRule) (string, error) {
 	canon := make([]canonicalRule, len(rules))
 	for i, r := range rules {
@@ -108,6 +116,9 @@ func computeVersion(rules []genRule) (string, error) {
 			Confidence:    r.Confidence,
 			MaxLookbehind: r.MaxLookbehind,
 			MaxLookahead:  r.MaxLookahead,
+		}
+		if r.Block != nil {
+			canon[i].Block = &canonicalBlock{Begin: r.Block.Begin, Extend: r.Block.Extend}
 		}
 	}
 	data, err := json.Marshal(canon)
@@ -143,7 +154,8 @@ func init() {
 			Confidence:    {{.ConfidenceConst}},
 			MaxLookbehind: {{.MaxLookbehind}},
 			MaxLookahead:  {{.MaxLookahead}},
-		},
+{{if .Block}}			Block: &Block{Begin: validators.{{.Block.Begin}}, Extend: validators.{{.Block.Extend}}},
+{{end}}		},
 {{end}}	})
 }
 `

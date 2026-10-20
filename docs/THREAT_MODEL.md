@@ -66,7 +66,8 @@ credential-management mechanism.
 | --- | --- |
 | Adversarial keyword floods causing validator storms | Validators run on bounded windows; per-candidate cost is capped; benchmarks include candidate-heavy corpora |
 | Secrets straddling chunk boundaries | Rule-derived overlap retention; fixtures test every boundary position |
-| Truncated multiline blocks (PEM) buffering forever | Hard caps on multiline detector state; truncated blocks fail safe (redact-to-cap or bounded flush) |
+| Truncated multiline blocks (PEM) buffering forever | Detection is decided in a bounded window; a confirmed key is followed window by window to its end marker and masked whole, while its held interior is discarded under buffer pressure, so memory stays bounded; an unterminated block fails safe, masked through its last body byte at end of input; a key marker nested in an open key cannot start a second chain |
+| Multiline keys in diff patches | Line-anchored key grammar accepts one leading unified-diff marker (`+`, `-`, space) and counts the old and new file versions separately |
 | Panic on malformed input | Fuzzing of validators, parsers, span merging, and streaming boundaries; invalid UTF-8 and arbitrary bytes are first-class inputs |
 | Secret appears in error text | Error paths carry no input bytes by construction; enforced by tests and review |
 

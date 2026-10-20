@@ -24,6 +24,31 @@ func isDigit(c byte) bool {
 	return c >= '0' && c <= '9'
 }
 
+// isDiffMarker reports whether c is one of the bytes that open a line of a
+// unified diff hunk: '+' (added), '-' (removed) or ' ' (context).
+func isDiffMarker(c byte) bool {
+	return c == '+' || c == '-' || c == ' '
+}
+
+// startsLine reports whether pos is the first byte of a line: the start of
+// window or the byte after a '\n'. The start of window is only the start
+// of a line when it is the start of input, so a rule using this to look at
+// the byte before its trigger declares a lookbehind that covers that byte:
+// the engine hands a validator its full lookbehind except at the start of
+// input.
+func startsLine(window []byte, pos int) bool {
+	return pos == 0 || pos > 0 && pos <= len(window) && window[pos-1] == '\n'
+}
+
+// isDiffRemovalMarker reports whether window[pos] is '-' opening a line,
+// i.e. the marker of a removed line in a unified diff, so that a check
+// rejecting a '-' before a trigger ("x-sk-...", "---password") can still
+// accept a token or flag that starts a removed line. Callers need a
+// lookbehind of two bytes before the trigger (see startsLine).
+func isDiffRemovalMarker(window []byte, pos int) bool {
+	return pos >= 0 && pos < len(window) && window[pos] == '-' && startsLine(window, pos)
+}
+
 // isAlnum reports whether c is an ASCII letter or digit.
 func isAlnum(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || isDigit(c)

@@ -39,6 +39,23 @@ package goredact
 // never reads those bytes, and under the preserving strategies the zero
 // bytes mask to '*', so discarded input can never reach the output either
 // way.
+//
+// Block rules (rules.Block, the private-key rules) mask a delimited block
+// to its end however long it is. Begin confirms the block within the
+// trigger's window; when the block runs past that window, the confirmed
+// span ends at a resume point and the engine queues a continuation
+// candidate there, whose window is the next MaxLookahead bytes. Validating
+// it (Extend) adds the adjacent span — the collector merges the two — and
+// either closes the block or queues the next continuation. A continuation
+// behaves like any queued candidate with no lookbehind and a zero-length
+// trigger at its resume point, so the invariants above hold unchanged: the
+// release limit stays below it, the held block span pins emission at its
+// start, and under buffer pressure the block's interior is discarded as a
+// gap. Memory stays bounded; output inside an open block waits for the
+// block to end. A trigger inside the extent a block of the same rule has
+// already been followed through (blockEnd) is confirmed within its own
+// window only: that block covers it, and nested markers cannot start
+// chains of their own and multiply the scanning work.
 
 import (
 	"bytes"
@@ -125,9 +142,24 @@ func asciiLower(s string) string {
 // candidate is a trigger occurrence for one rule, in absolute input
 // offsets. Candidates whose lookahead window is not yet fully buffered
 // wait in the pending queue until enough input arrives or EOF.
+//
+// A continuation candidate (cont) carries an open block forward: its
+// zero-length trigger sits at the resume point, it has no lookbehind, and
+// state is the block scanner's state.
 type candidate struct {
 	rule               int
 	trigStart, trigEnd int64
+	cont               bool
+	state              uint64
+}
+
+// windowStart returns the absolute offset at which c's validation window
+// begins.
+func (c *candidate) windowStart(rules []rules.Rule) int64 {
+	if c.cont {
+		return c.trigStart
+	}
+	return c.trigStart - int64(rules[c.rule].MaxLookbehind)
 }
 
 // scanState holds the pooled, reusable per-Redact allocations. All fields
@@ -155,13 +187,23 @@ type scanState struct {
 	// invariant were violated, discarded input bytes could not leak.
 	scratch []byte
 
+	// blockEnd records, per rule index, the absolute offset up to which
+	// the latest block of that rule followed past its trigger window has
+	// been scanned: its resume point while open, its end once closed.
+	blockEnd []int64
+
 	coll span.Collector
 }
 
-func (s *scanState) reset() {
+func (s *scanState) reset(nRules int) {
 	s.buf = s.buf[:0]
 	s.pending = s.pending[:0]
 	s.released = s.released[:0]
+	if cap(s.blockEnd) < nRules {
+		s.blockEnd = make([]int64, nRules)
+	}
+	s.blockEnd = s.blockEnd[:nRules]
+	clear(s.blockEnd)
 	s.coll.Reset()
 }
 
@@ -200,7 +242,7 @@ func (e *Engine) redact(ctx context.Context, dst io.Writer, src io.Reader) (Stat
 		ctx = context.Background()
 	}
 	st := e.states.Get().(*scanState)
-	st.reset()
+	st.reset(len(e.rules.Rules))
 	defer e.states.Put(st)
 
 	r := &scanRun{e: e, st: st, w: span.NewMaskingWriter(dst, e.marker, e.cfg.MaskStrategy.internal()), src: src}
@@ -237,12 +279,16 @@ func (r *scanRun) run(ctx context.Context) error {
 			r.scanBase = r.bufEnd()
 			r.st.buf = buf[:len(buf)+n]
 			r.stats.BytesRead += int64(n)
+			// Queued candidates go first, so an open block's continuation
+			// follows it into the new bytes before their triggers are
+			// dispatched: a trigger inside that block then sees it covered
+			// (see blockEnd). Either order yields the same spans otherwise.
+			if err := r.validatePending(false); err != nil {
+				return err
+			}
 			r.scanNew()
 			if r.scanErr != nil {
 				return r.scanErr
-			}
-			if err := r.validatePending(false); err != nil {
-				return err
 			}
 		}
 		switch {
@@ -306,7 +352,7 @@ func (r *scanRun) onTrigger(pattern, end int) bool {
 		}
 		c := candidate{rule: ri, trigStart: trigStart, trigEnd: trigEnd}
 		if trigEnd+int64(r.e.rules.Rules[ri].MaxLookahead) <= be {
-			if err := r.validate(c); err != nil {
+			if err := r.validateChain(c, false); err != nil {
 				r.scanErr = err
 			}
 		} else {
@@ -319,23 +365,55 @@ func (r *scanRun) onTrigger(pattern, end int) bool {
 // validatePending validates every queued candidate whose lookahead window
 // is now fully buffered (or all of them, with truncated windows, at EOF)
 // and compacts the queue in place.
+//
+// Continuations go first: an open block follows its continuation into the
+// newly buffered bytes before any queued trigger there is validated, so a
+// trigger inside the block sees it covered (blockEnd) whatever order the
+// two were queued in. Otherwise the order of validation does not matter.
 func (r *scanRun) validatePending(eof bool) error {
-	if len(r.st.pending) == 0 {
-		return nil
-	}
-	be := r.bufEnd()
-	kept := r.st.pending[:0]
-	for _, c := range r.st.pending {
-		if eof || c.trigEnd+int64(r.e.rules.Rules[c.rule].MaxLookahead) <= be {
-			if err := r.validate(c); err != nil {
-				return err
-			}
-		} else {
-			kept = append(kept, c)
+	for _, conts := range [2]bool{true, false} {
+		if len(r.st.pending) == 0 {
+			return nil
 		}
+		be := r.bufEnd()
+		// Validation can queue continuations, which validateChain appends
+		// to pending: iterate over the entries present on entry only,
+		// compacting them in place, then keep whatever was appended after
+		// them.
+		n := len(r.st.pending)
+		kept := 0
+		for i := 0; i < n; i++ {
+			c := r.st.pending[i]
+			if c.cont == conts && (eof || c.trigEnd+int64(r.e.rules.Rules[c.rule].MaxLookahead) <= be) {
+				if err := r.validateChain(c, eof); err != nil {
+					return err
+				}
+			} else {
+				r.st.pending[kept] = c
+				kept++
+			}
+		}
+		added := copy(r.st.pending[kept:], r.st.pending[n:])
+		r.st.pending = r.st.pending[:kept+added]
 	}
-	r.st.pending = kept
 	return nil
+}
+
+// validateChain validates c and, while that leaves a block open with the
+// next window already buffered (or at EOF), validates the continuation
+// too. A continuation whose window is not buffered yet is queued.
+func (r *scanRun) validateChain(c candidate, eof bool) error {
+	for {
+		next, open, err := r.validate(c)
+		if err != nil || !open {
+			return err
+		}
+		if !eof && next.trigEnd+int64(r.e.rules.Rules[next.rule].MaxLookahead) > r.bufEnd() {
+			r.st.pending = append(r.st.pending, next)
+			return nil
+		}
+		c = next
+	}
 }
 
 // validate runs one rule's validator over the candidate's bounded window
@@ -343,24 +421,62 @@ func (r *scanRun) validatePending(eof bool) error {
 // bounded, so they run synchronously on the scan path. A panic inside a
 // validator (only possible with caller-supplied custom rules) is converted
 // by callValidate into an error naming the rule, which aborts Redact.
-func (r *scanRun) validate(c candidate) error {
-	r.stats.Candidates++
+//
+// For a block rule it reports, with open, a block that runs past the
+// window, and next, the continuation candidate that carries it on.
+func (r *scanRun) validate(c candidate) (next candidate, open bool, err error) {
 	rule := &r.e.rules.Rules[c.rule]
-	wStart := c.trigStart - int64(rule.MaxLookbehind)
+	wStart := c.windowStart(r.e.rules.Rules)
 	if wStart < r.bufBase {
 		wStart = r.bufBase
 	}
-	wEnd := c.trigEnd + int64(rule.MaxLookahead)
+	full := c.trigEnd + int64(rule.MaxLookahead)
+	wEnd := full
 	if be := r.bufEnd(); wEnd > be {
 		wEnd = be
 	}
 	window := r.st.buf[wStart-r.bufBase : wEnd-r.bufBase]
-	s, en, ok, err := callValidate(rule, window, int(c.trigStart-wStart), int(c.trigEnd-wStart))
+	// A window cut short of its lookahead ends at the end of input:
+	// candidates are only validated early at EOF.
+	final := wEnd < full
+
+	var (
+		s, en int
+		ok    bool
+		state uint64
+	)
+	switch {
+	case c.cont:
+		en, state, open, err = callExtend(rule, window, c.state, final)
+		ok = en > 0
+	case rule.Block != nil:
+		r.stats.Candidates++
+		// Inside a block of this rule that was followed past its window,
+		// this block is covered by it: confirm it within its own window
+		// only (final), so it cannot start a second chain.
+		covered := c.trigStart < r.st.blockEnd[c.rule]
+		s, en, state, open, ok, err = callBegin(rule, window, int(c.trigStart-wStart), int(c.trigEnd-wStart), final || covered)
+	default:
+		r.stats.Candidates++
+		s, en, ok, err = callValidate(rule, window, int(c.trigStart-wStart), int(c.trigEnd-wStart))
+	}
 	if err != nil {
-		return err
+		return candidate{}, false, err
+	}
+	// An open block must resume strictly inside its window, past where
+	// this window started, or the chain would not progress.
+	if open && (!ok || en <= int(c.trigEnd-wStart) || en > len(window)) {
+		open = false
+	}
+	if open {
+		resume := wStart + int64(en)
+		r.st.blockEnd[c.rule] = resume
+		next = candidate{rule: c.rule, trigStart: resume, trigEnd: resume, cont: true, state: state}
+	} else if c.cont && ok {
+		r.st.blockEnd[c.rule] = max(r.st.blockEnd[c.rule], wStart+int64(min(en, len(window))))
 	}
 	if !ok {
-		return nil
+		return next, open, nil
 	}
 	// Clamp defensively: a validator must report a range within its
 	// window, but a buggy custom validator must not crash the engine or
@@ -372,7 +488,7 @@ func (r *scanRun) validate(c candidate) error {
 		en = len(window)
 	}
 	if s >= en {
-		return nil
+		return next, open, nil
 	}
 	r.st.coll.Add(span.Span{
 		Start:      wStart + int64(s),
@@ -380,7 +496,7 @@ func (r *scanRun) validate(c candidate) error {
 		Rule:       c.rule,
 		Confidence: uint8(rule.Confidence),
 	})
-	return nil
+	return next, open, nil
 }
 
 // callValidate invokes rule.Validate, converting a panic into an error that
@@ -395,6 +511,30 @@ func callValidate(rule *rules.Rule, window []byte, trigStart, trigEnd int) (s, e
 	}()
 	s, en, ok = rule.Validate(window, trigStart, trigEnd)
 	return s, en, ok, nil
+}
+
+// callBegin invokes a block rule's Begin with the same panic conversion
+// as callValidate.
+func callBegin(rule *rules.Rule, window []byte, trigStart, trigEnd int, final bool) (s, en int, state uint64, open, ok bool, err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("goredact: rule %q: Validate panicked", rule.ID)
+		}
+	}()
+	s, en, state, open, ok = rule.Block.Begin(window, trigStart, trigEnd, final)
+	return s, en, state, open, ok, nil
+}
+
+// callExtend invokes a block rule's Extend with the same panic conversion
+// as callValidate.
+func callExtend(rule *rules.Rule, window []byte, state uint64, final bool) (en int, next uint64, open bool, err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("goredact: rule %q: Validate panicked", rule.ID)
+		}
+	}()
+	en, next, open = rule.Block.Extend(window, state, final)
+	return en, next, open, nil
 }
 
 // flush releases every span that can no longer grow, records findings,
@@ -413,8 +553,7 @@ func (r *scanRun) flush(eof bool) error {
 		// to ws-1 because a span produced from the candidate may start
 		// exactly at ws.
 		for i := range r.st.pending {
-			c := &r.st.pending[i]
-			if ws := c.trigStart - int64(r.e.rules.Rules[c.rule].MaxLookbehind); ws <= releaseLimit {
+			if ws := r.st.pending[i].windowStart(r.e.rules.Rules); ws <= releaseLimit {
 				releaseLimit = ws - 1
 			}
 		}

@@ -69,3 +69,26 @@ func BenchmarkRedactQuiet(b *testing.B) {
 func BenchmarkRedactNoisy(b *testing.B) {
 	benchRedact(b, benchNoisyInput(4<<20))
 }
+
+// benchKeyBlockInput interleaves quiet log text with PEM private-key blocks
+// of keySize bytes, so most of the input lies inside blocks that run past
+// the rule's lookahead and are followed window by window.
+func benchKeyBlockInput(size, keySize int) []byte {
+	rng := rand.New(rand.NewSource(2))
+	quiet := benchQuietInput(4 << 10)
+	buf := make([]byte, 0, size+keySize)
+	for len(buf) < size {
+		buf = append(buf, quiet...)
+		buf = append(buf, "-----BEGIN RSA PRIVATE KEY-----\n"...)
+		for body := 0; body < keySize; body += 65 {
+			buf = append(buf, pemTestSynthLine(rng, 64)...)
+			buf = append(buf, '\n')
+		}
+		buf = append(buf, "-----END RSA PRIVATE KEY-----\n"...)
+	}
+	return buf
+}
+
+func BenchmarkRedactLongKeyBlocks(b *testing.B) {
+	benchRedact(b, benchKeyBlockInput(4<<20, 64<<10))
+}

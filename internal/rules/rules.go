@@ -41,6 +41,39 @@ const (
 // window: no I/O, no logging, no retention of the window slice.
 type ValidateFunc func(window []byte, trigStart, trigEnd int) (start, end int, ok bool)
 
+// BlockBeginFunc confirms a block rule's candidate exactly like a
+// ValidateFunc and also reports whether the block runs on past window.
+//
+// final reports that window ends at the end of input. When it is false and
+// the block's end lies beyond the window, the function may return
+// open == true: the confirmed span is then [start, end), where end is a
+// token boundary at which scanning resumes in the bytes that follow, and
+// state is the scanner state to resume with (see BlockExtendFunc). An open
+// result has trigEnd < end <= len(window). With final set the result is
+// never open and equals the rule's ValidateFunc result.
+type BlockBeginFunc func(window []byte, trigStart, trigEnd int, final bool) (start, end int, state uint64, open, ok bool)
+
+// BlockExtendFunc continues an open block. window starts at the resume
+// point (the end of the span so far) and holds up to the rule's
+// MaxLookahead bytes; final reports that it ends at the end of input. It
+// returns the block's end within window, so [0, end) extends the span
+// (end == 0 adds nothing). When the block still runs past the window it
+// returns open == true, with end the next resume point
+// (0 < end <= len(window)) and next the state to resume with.
+type BlockExtendFunc func(window []byte, state uint64, final bool) (end int, next uint64, open bool)
+
+// Block lets a rule mask a delimited block of unbounded length, such as a
+// private key, to its end marker rather than to the end of a fixed window.
+// Begin confirms the block within the trigger's bounded window; while the
+// block stays open, the engine calls Extend on each following
+// MaxLookahead-byte window and merges the adjacent spans into one. Only
+// the masked extent is unbounded: detection is decided in the trigger
+// window, and the engine retains no more input than for any other rule.
+type Block struct {
+	Begin  BlockBeginFunc
+	Extend BlockExtendFunc
+}
+
 // Trigger is a literal byte string that activates a rule.
 type Trigger struct {
 	Literal  string
@@ -74,6 +107,13 @@ type Rule struct {
 	// before the trigger start and after the trigger end.
 	MaxLookbehind int
 	MaxLookahead  int
+
+	// Block, when non-nil, makes this a block rule: the streaming engine
+	// confirms candidates with Block.Begin instead of Validate and keeps
+	// extending an open block past the validation window. Validate stays
+	// required and is the window-bounded equivalent (Block.Begin with
+	// final set). Built-in rules only.
+	Block *Block
 
 	// Custom marks caller-supplied rules.
 	Custom bool
