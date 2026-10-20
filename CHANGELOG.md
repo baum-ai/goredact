@@ -29,9 +29,10 @@ versioning.
   `PuTTY-User-Key-File-` line: an added key the new file, a removed key the
   old one, a key whose first line is unchanged context both, stepping over
   the other version's lines and its public lines until each version's
-  `Private-Lines:` header (within 16 KiB of the trigger; past that, a
-  section waiting for more lines ends after 64 lines no count needs, or at
-  one longer than 512 bytes). Added, removed, changed and rotated keys —
+  `Private-Lines:` header (within 16 KiB of the trigger; a stepped line
+  may end at most 512 bytes past that reach or past its own start, and
+  past the reach a section waiting for more lines ends after 64 stepped
+  lines). Added, removed, changed and rotated keys —
   to another type or size, as `git diff` shows them — are masked; public
   lines between two private sections of a changed key may be masked too. A
   private line longer than the window is masked as far as it goes.
@@ -44,7 +45,9 @@ versioning.
   whole, so their bytes no longer end the scan before the key body; GnuPG
   1.x keys were not detected at all. Up to 32 header lines of up to 1 KiB
   are accepted, indented (as in a YAML block) or on diff lines, with ": ",
-  ":\t" or a bare ':' after the key, raw or JSON-escaped.
+  ":\t" or a bare ':' after the key, raw or JSON-escaped. Headers that run
+  past the 16 KiB window are followed into the next one, and such a block
+  is masked as a key even before its body is seen.
 - **Fixed:** the other checks anchored on what precedes a trigger accept a
   diff removal marker. `command-line-password-flag` rejected
   `---password=...` and `openai-legacy-key` and `deepseek-api-key` rejected

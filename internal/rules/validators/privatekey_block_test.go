@@ -328,13 +328,25 @@ func FuzzBlockChainMatchesWholeScan(f *testing.F) {
 			fn = ppkBlock
 		}
 		text := append([]byte(fn.trigger), data...)
-		lookahead := 2*pemResumeReserve + pemResumeLag + 1 + int(la)%1024
+		// Windows hold at least one armor header line, as the engine's do
+		// (blockMinStep).
+		lookahead := pemArmorWindowMin + int(la)%1024
 
 		start, end, ok, opened, _ := chainSpan(fn, text, 0, lookahead)
 		var wantS, wantE int
 		var wantOK bool
 		if opened {
 			wantS, wantE, wantOK = wholeSpan(fn, text, 0)
+			if ok && !wantOK && fn.name == "pem" {
+				// Armor header lines ran to the end of the trigger window:
+				// the chain takes the block as a key (fail-safe) where one
+				// scan of the whole input, seeing no body, does not.
+				wEnd := min(len(fn.trigger)+lookahead, len(text))
+				if _, _, st, _, _ := fn.begin(text[:wEnd], 0, len(fn.trigger), false); st&pemStateArmor == 0 {
+					t.Fatalf("pem lookahead %d: chained (%d,%d) confirmed a block the whole scan rejects", lookahead, start, end)
+				}
+				return
+			}
 		} else {
 			wEnd := min(len(fn.trigger)+lookahead, len(text))
 			wantS, wantE, wantOK = wholeSpan(fn, text[:wEnd], 0)
@@ -422,3 +434,7 @@ func pemSeparatorsOnly(b []byte) bool {
 	}
 	return true
 }
+
+// pemArmorWindowMin is the shortest window that holds a whole armor header
+// line: value, key, indentation, separator, marker and line breaks.
+const pemArmorWindowMin = pemArmorLineMax + pemLabelMax + pemArmorIndentMax + 16

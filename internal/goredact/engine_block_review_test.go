@@ -274,3 +274,41 @@ func TestEngineArmorHeaders(t *testing.T) {
 		t.Run(name, func(t *testing.T) { assertBlockMasked(t, input, body) })
 	}
 }
+
+// TestEngineArmorHeadersLongerThanTheWindow: armor header lines that
+// together run past the trigger window (32 headers of 600 bytes of
+// punctuation, ~19 KiB) are followed into the next window, and the key
+// behind them is masked.
+func TestEngineArmorHeadersLongerThanTheWindow(t *testing.T) {
+	body := blockTestLines(33, 300)
+	headers := make([]string, 32)
+	for i := range headers {
+		headers[i] = fmt.Sprintf("Comment: %02d %s", i, strings.Repeat("(.)", 200))
+	}
+	key := "-----BEGIN PGP PRIVATE KEY BLOCK-----\n" + strings.Join(headers, "\n") + "\n\n" +
+		strings.Join(body, "\n") + "\n=Tx4q\n-----END PGP PRIVATE KEY BLOCK-----\n"
+	t.Run("raw", func(t *testing.T) { assertBlockMasked(t, "before\n"+key+"after\n", body) })
+	t.Run("on + lines", func(t *testing.T) { assertBlockMasked(t, "@@ -0,0 +1,340 @@\n"+blockTestDiff("+", key), body) })
+	t.Run("JSON-escaped", func(t *testing.T) {
+		assertBlockMasked(t, `{"key":"`+strings.ReplaceAll(key, "\n", `\n`)+`"}`+"\n", body)
+	})
+}
+
+// TestEngineSteppedPPKLineIsBounded: a long line a diff PPK scan steps over
+// while waiting for the other file version's header is not folded into the
+// redaction: it may run at most ppkMaxStepLine bytes past the header reach.
+func TestEngineSteppedPPKLineIsBounded(t *testing.T) {
+	old := blockTestLines(34, 2)
+	long := strings.Repeat("y", 100<<10)
+	patch := "@@ -1,5 +1,3 @@\n PuTTY-User-Key-File-2: ssh-rsa\n Encryption: none\n" +
+		"-Private-Lines: 2\n-" + old[0] + "\n-" + old[1] + "\n+" + long + "\n context after\n"
+	for name, sizes := range blockTestReadSizes() {
+		out, stats := redactAll(t, mustEngine(t, Config{MaskStrategy: MaskLengthPreserving}), &chunkedReader{data: []byte(patch), sizes: sizes})
+		if blockLeaks(out, old) > 0 {
+			t.Fatalf("%s: the old private lines survive", name)
+		}
+		if kept := strings.Count(out, "y"); kept < len(long)-(16<<10)-1024 {
+			t.Fatalf("%s: %d of the stepped line's %d bytes masked (findings %v)", name, len(long)-kept, len(long), stats.ByRule)
+		}
+	}
+}

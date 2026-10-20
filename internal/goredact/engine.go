@@ -181,10 +181,12 @@ func (c *candidate) windowEnd(rules []rules.Rule) int64 {
 
 // Continuation windows end on multiples of blockGrid, at least
 // blockMinStep past their resume point (and never past the rule's
-// lookahead, so the retained overlap still covers them).
+// lookahead, so the retained overlap still covers them). blockMinStep
+// exceeds the longest PEM armor header line (pemArmorLineMax plus its key
+// and indentation), so every window decides at least one.
 const (
 	blockGrid    = 4096
-	blockMinStep = 1024
+	blockMinStep = 2048
 )
 
 // blockWindowEnd returns where a continuation window resuming at at ends.

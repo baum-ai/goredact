@@ -131,13 +131,14 @@ Requirements:
   buffer pressure the block's interior is discarded as a gap, keeping memory
   bounded. Every trigger is followed on its own, so a key nested in another
   is masked to its own end. Continuation windows end on a fixed grid of
-  absolute offsets (4 KiB cells, at least 1 KiB past the resume point), so
-  scans of the same rule over the same bytes stop at the same places; once
-  their states agree they reach the same (resume point, state), and the
-  later scan stops there (`seenConts`, pruned behind the buffer). A nested
-  key therefore costs its trigger window and about one grid cell more: the
-  work stays linear. Queued candidates, continuations first, are validated
-  before newly read bytes are scanned.
+  absolute offsets (4 KiB cells, at least 2 KiB past the resume point, more
+  than the longest PEM armor header line), so scans of the same rule over
+  the same bytes stop at the same places; once their states agree they
+  reach the same (resume point, state), and the later scan stops there
+  (`seenConts`, pruned behind the buffer). A nested key therefore costs its
+  trigger window and about one grid cell more: the work stays linear.
+  Queued candidates, continuations first, are validated before newly read
+  bytes are scanned.
 
 ## Cross-cutting invariants (enforced by tests/fuzz)
 
