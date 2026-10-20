@@ -20,6 +20,31 @@ io.Reader → [chunked buffer] → Aho–Corasick matcher → trigger hits
 tables call `RegisterBuiltins` from an `init` in a generated file inside
 this package. `Set.MaxWindow()` is the overlap the engine must retain.
 
+A built-in rule may also be a block rule (`Rule.Block`): it masks a
+delimited block of unbounded length — a private key — to its end marker.
+`Block.Begin` confirms a candidate like `Validate` over the trigger's
+bounded window and reports whether the block runs on past it; while it
+does, `Block.Extend` continues the same resumable scan over each following
+`MaxLookahead`-byte window, starting at the resume point and carrying a
+`uint64` of scanner state:
+
+```go
+type BlockBeginFunc func(window []byte, trigStart, trigEnd int, final bool) (start, end int, state uint64, open, ok bool)
+type BlockExtendFunc func(window []byte, state uint64, final bool) (end int, next uint64, open bool)
+```
+
+`final` reports that a window ends at the end of input. An open result's
+`end` is the resume point, so consecutive spans are adjacent and merge.
+It is normally the last body byte decided so far, so bytes after it are
+masked only if the block goes on past them; where that would not advance
+the scan (a long run of separators, a backslash run or a line longer than
+the window), it is where the scan stopped, and the bytes before it are
+masked with the block. Detection stays window-bounded: only the masked
+extent is unbounded, and chained scans mask at least what one unbounded
+scan would, and at most a window and a line more (fuzzed by
+`FuzzBlockChainMatchesWholeScan`). `Validate` stays required for block
+rules and equals `Begin` with `final` set.
+
 ### `internal/ahocorasick`
 
 Pure-Go Aho–Corasick over bytes. Contract:
@@ -99,6 +124,21 @@ Requirements:
 - Context checked between chunks. Reader errors → *ReadError, writer
   errors → *WriteError, ctx.Err() preserved.
 - No temporary files. No allocation proportional to input size.
+- Block rules: an open block queues a continuation candidate at its resume
+  point (zero-length trigger, no lookbehind), validated like any queued
+  candidate once its window is buffered. Its held span pins emission at the
+  block's start, so output inside an open block waits for its end; under
+  buffer pressure the block's interior is discarded as a gap, keeping memory
+  bounded. Every trigger is followed on its own, so a key nested in another
+  is masked to its own end. Continuation windows end on a fixed grid of
+  absolute offsets (4 KiB cells, at least 2 KiB past the resume point, more
+  than the longest PEM armor header line), so scans of the same rule over
+  the same bytes stop at the same places; once their states agree they
+  reach the same (resume point, state), and the later scan stops there
+  (`seenConts`, pruned behind the buffer). A nested key therefore costs its
+  trigger window and about one grid cell more: the work stays linear.
+  Queued candidates, continuations first, are validated before newly read
+  bytes are scanned.
 
 ## Cross-cutting invariants (enforced by tests/fuzz)
 
@@ -109,7 +149,11 @@ Requirements:
    span's length. The default `MaskFixedMarker` discloses nothing.)
 2. Output equals input outside redacted spans.
 3. Chunked and unchunked scans of the same input are byte-identical.
-4. Same input+config → same output (chunk-size independence).
+4. Same input+config → same output (chunk-size independence). (Exception:
+   under the preserving strategies, the interior of a merged span longer
+   than the buffer, such as a private key larger than `ChunkSize`, is
+   discarded and emitted as `*` bytes, so its masked shape depends on the
+   chunk size. It is masked either way.)
 5. Errors/log strings never embed input bytes.
 6. Any byte sequence is safe: no panics, bounded memory.
 

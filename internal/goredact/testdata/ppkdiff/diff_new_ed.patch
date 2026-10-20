@@ -1,0 +1,39 @@
+diff --git a/old_rsa.ppk b/new_ed.ppk
+index 00ba394..1fd3a1c 100644
+--- a/old_rsa.ppk
++++ b/new_ed.ppk
+@@ -1,26 +1,9 @@
+-PuTTY-User-Key-File-2: ssh-rsa
++PuTTY-User-Key-File-3: ssh-ed25519
+ Encryption: none
+-Comment: rsa-key-2020
+-Public-Lines: 6
+-RIgP/58waM+Dx3A5idNoDCDBwb2Dc4/dsdc6lC1MXlPq2Ymk/yE9fz1WuvL4NUyv
+-+D8FnyVVdBZdzst6iAxQa2H9uZ0+t1sAq6DdWXLgEJKC5BjfiOXslIVUgVil6p/8
+-ODnxr1YhNga3CcCySEU52c5cDyp2HmQbGnJJnmU1gQBEb6VEwZsMa3Y/Nxl/Cpzk
+-CUZpRr2biMws+eIFKRVVbiqgvrrOle+RNpF0JwSQrOwJcKiulO6jNFlBBL0OFYe1
+-UO5VeUN3wlg9oMaoFDBlo5yozIIo6Ogb8thXanZfuKjL5LrdxnFpXomfqMLfcCfz
+-JiJJCBlt/8TMpJWWTSonNlQaSEoaWm3UGfgI53g46ByrVh+D1CHtRQRhjyzWLd+A
+-Private-Lines: 14
+-Wo4ceo/9c0rjcGJvUanmmvV7KPwWTg2bG/ysxVFLgMiKRK4ew3yVp4Q+bP30Pljf
+-wAY4CDfhaWkSZing5Vt+1PaxakNDPBlRJvn3tpAP45snzr/OwwaAjZ70nV5ZuAx2
+-zrI/flC0TyiWJBsh0mT7h+V7FiM2ItI4CVULzjmaaeqiIJv7GVmitdyzW9hqchfD
+-zo3fiYJV4Sh6URR4unzeOanINdyp/MXFHCbE/4rjPWMczd/5wVdek7xb5hq/ObKF
+-BA9oxkZzUTDBxSHwgQK7mBEHQFjP3LYD/QjY5xqihffHWs2Ht0Z2IiJgWMTHa2FG
+-L8vMoFQE4Qy5DiLgpKmExHhoQhwOmM2faqry9NQ5DlUZvxpM0sQIFmo1motipBPT
+-oppI5j96uwKHRG+gfruvzn7rVDSgcROX0GMiNahIKJbW3Cv+kcZ/e25uY9Jg0ZBw
+-+Jz2Ft6AYmAPmok00n5mQ4RUgB2Ev1zkCLLAxi7iv9rx6O9tS1SCWhvQk0hk1j3q
+-+b+z2LIQaTdDNgT9MzXAL2Gb2sGN1PhjW9GbLxP5l/yO9NTxZVg1k/br+NBsiH4m
+-Mdjif0SQgY0HT0ij9ni+b/v8erWX5THpRbo/9qPQRgcLGWOcZn2pACncKcjriwCP
+-qsROgSFsJLNmofiGuDKRzveMqjBpOtQizL81ymcmRGOWeb3jCgih8QzNvIuDn5QT
+-JSb9qulUTw4zPSilBBQwM6D32jv0z7GM8EAFORtit8feNtUOFo2sgH31wtlr4eSH
+-rOW+rPC9axWydMfqqf78v/Y34zP+iQTBw1NDJX6wkTTNgC7ydyAf2UWreJUWwCb2
+-eFYJfy7PGxLM9FeBCn7j1VRo51VyxZ/juThjWKurShggsxj7BTQgcZJZ2eR6yZKJ
+-Private-MAC: 410ccd4427c496cb5794bf9296e093be811a5433d76c36c48036cf78157d8dc8
++Comment: ed25519-key-2026
++Public-Lines: 2
++eQv8IB8hdY88yTdTxBIUFmDi8x2y4RuMER/bh3m1xs0drDjUpNbikPI99LsI0TCl
++21PFFwqjeEnAJNEZ0lhTFrouRww6xNi3em3hmrB1oCwRHq7ttj+CHCvg6moWuXov
++Private-Lines: 1
++hmwNDQnciepX3MNpqc4VKrb5icPEYoXjrKsQ1li7s1l10E0TZA93cE6krdIkPfFE
++Private-MAC: 6d10f35970d13a48f1b763357840fc1878d1fa0141312f12fa5a2bcc9b86ad34

@@ -51,6 +51,16 @@ func validateRules(rules []specRule) []string {
 			report(r, "validator %q is not a valid Go identifier", r.Validator)
 		}
 
+		if r.Block != nil {
+			for _, fn := range []struct{ field, name string }{{"block.begin", r.Block.Begin}, {"block.extend", r.Block.Extend}} {
+				if fn.name == "" {
+					report(r, "%s is required for a block rule", fn.field)
+				} else if !goIdentPattern.MatchString(fn.name) {
+					report(r, "%s %q is not a valid Go identifier", fn.field, fn.name)
+				}
+			}
+		}
+
 		if !validMinProfiles[r.MinProfile] {
 			report(r, "minProfile %q is invalid (want one of fast, balanced, deep)", r.MinProfile)
 		}

@@ -26,6 +26,7 @@ type specRule struct {
 	Confidence    string         `json:"confidence"`
 	MaxLookbehind int            `json:"maxLookbehind"`
 	MaxLookahead  int            `json:"maxLookahead"`
+	Block         *specBlock     `json:"block,omitempty"`
 	Provenance    specProvenance `json:"provenance"`
 	Fixtures      specFixtures   `json:"fixtures"`
 
@@ -33,6 +34,13 @@ type specRule struct {
 	// from, populated by loadSpecs. It is not part of the JSON schema; it
 	// exists purely to make validation error messages actionable.
 	sourceFile string
+}
+
+// specBlock names the block functions of a block rule (rules.Block): Begin
+// and Extend, both Go identifiers in internal/rules/validators.
+type specBlock struct {
+	Begin  string `json:"begin"`
+	Extend string `json:"extend"`
 }
 
 type specTrigger struct {

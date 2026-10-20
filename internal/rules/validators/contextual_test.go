@@ -573,9 +573,29 @@ func TestCommandLinePasswordFlag(t *testing.T) {
 		},
 		{
 			name:   "triple dash is not a flag",
-			window: "---password=tR8kW3nQ7zXm2",
+			window: "run ---password=tR8kW3nQ7zXm2",
 			trig:   "--password",
 			wantOK: false,
+		},
+		{
+			name:   "four dashes at a line start are not a flag",
+			window: "x\n----password=tR8kW3nQ7zXm2",
+			trig:   "--password",
+			wantOK: false,
+		},
+		{
+			name:    "flag opening a removed diff line",
+			window:  "@@ -1 +1 @@\n---password=tR8kW3nQ7zXm2\n+--password-file=/run/secrets/db",
+			trig:    "--password",
+			wantOK:  true,
+			wantVal: "tR8kW3nQ7zXm2",
+		},
+		{
+			name:    "flag opening an added diff line",
+			window:  "@@ -0,0 +1 @@\n+--password=tR8kW3nQ7zXm2",
+			trig:    "--password",
+			wantOK:  true,
+			wantVal: "tR8kW3nQ7zXm2",
 		},
 		{
 			name:   "window truncated right after trigger",

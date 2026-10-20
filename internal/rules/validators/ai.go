@@ -54,9 +54,16 @@ func precedingBoundaryOK(window []byte, pos int) bool {
 // precedingBoundaryExtOK is precedingBoundaryOK extended to also reject a
 // preceding '-' or '_', for tokens whose trigger is short and generic
 // enough (bare "sk-") that a preceding hyphen/underscore still plausibly
-// means "this is part of a larger token", not a real boundary.
+// means "this is part of a larger token", not a real boundary. A '-' that
+// opens a line is a unified-diff removal marker, not part of a token, so a
+// token starting a removed line in a patch still has its boundary; rules
+// using this declare a two-byte lookbehind so the byte before that '-' is
+// in the window.
 func precedingBoundaryExtOK(window []byte, pos int) bool {
 	if pos <= 0 {
+		return true
+	}
+	if isDiffRemovalMarker(window, pos-1) {
 		return true
 	}
 	return !isAlnumExt(window[pos-1])

@@ -30,6 +30,24 @@ already the separator/quote grammar around the value, not the trigger
 literal itself) do not need this — see `consumeAssignedValue` and
 `parseAssignmentValue` for that family's own boundary handling.
 
+A rule whose secret is a delimited block of unbounded length (a private
+key) names block functions next to its validator:
+`"block": {"begin": "PEMPrivateKeyBegin", "extend": "PEMPrivateKeyExtend"}`
+(see `rules.Block` and `docs/DESIGN.md`). The window validator must equal
+`Begin` with `final` set. Detection must still be decided within the
+trigger window; `Extend` only carries the masked extent on, as a resumable
+scan whose stopping points leave every token it decides wholly in view.
+
+Grammar anchored at the start of a line must also accept one leading
+unified-diff marker (`+`, `-` or space) where a line in a patch can hold
+the same text, since agent sessions and review bundles carry diffs. A check
+that rejects a `-` before a fixed-prefix trigger (to avoid matching inside
+`x-sk-...`) accepts a `-` that opens a line, as a removal marker. Any rule
+that reads the diff marker of its trigger's line declares
+`maxLookbehind: 2`, so the byte before that marker is in its window and
+the start of the window is the start of a line only at the start of input
+(`TestLineStartRulesSeeTheBytesBeforeTheirTrigger`).
+
 After changing a rule:
 
 ```sh

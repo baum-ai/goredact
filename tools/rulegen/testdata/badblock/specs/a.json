@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "half-block",
+      "name": "Block rule without an extend function",
+      "triggers": [{"literal": "blk_", "caseFold": false}],
+      "validator": "FakeValidatorA",
+      "minProfile": "fast",
+      "confidence": "high",
+      "maxLookbehind": 0,
+      "maxLookahead": 8,
+      "block": {"begin": "FakeBlockBegin", "extend": ""},
+      "provenance": {"source": "https://example.com/blk", "license": "original"},
+      "fixtures": {"match": ["blk_ok"], "nomatch": []}
+    }
+  ]
+}

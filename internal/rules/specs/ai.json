@@ -85,7 +85,7 @@
       "validator": "OpenAILegacyKey",
       "minProfile": "fast",
       "confidence": "high",
-      "maxLookbehind": 1,
+      "maxLookbehind": 2,
       "maxLookahead": 52,
       "provenance": {
         "source": "https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety",
@@ -95,14 +95,16 @@
         "match": [
           "OPENAI_API_KEY=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",
           "Authorization: Bearer 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",
-          "{\"key\": \"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\"}"
+          "{\"key\": \"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\"}",
+          "@@ -1,2 +1,1 @@\n-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\n other\n"
         ],
         "nomatch": [
           "sk-abcdEFGH12",
           "sk-70Ii88WRAFMcMAhCWPfOagj8Ggq8MY8sbFU24lQSbfFBDwJn",
           "Authorization: Bearer sk-ant-api03-L6VtNHDzbvOYIs52KThe1DBzYMxIsTnjxqnzKJgS1niDgzJKhy20RHoBqBbuVcPjhcUAwu89LeznSyn2bpa26sQIrfAA",
           "OPENAI_API_KEY=sk-proj-BVNMKlvU9FzBvWdqOPDZtJVcBIS5TvkvuzSLy8asT3BlbkFJLq83zMskErFlHpuT9KMBRkPgrihZPskJwst1ctDX",
-          "This model carries elevated risk-taking behavior in production."
+          "This model carries elevated risk-taking behavior in production.",
+          "token: x-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"
         ]
       }
     },
@@ -216,7 +218,7 @@
       "validator": "DeepSeekAPIKey",
       "minProfile": "fast",
       "confidence": "high",
-      "maxLookbehind": 1,
+      "maxLookbehind": 2,
       "maxLookahead": 40,
       "provenance": {
         "source": "TruffleHog deepseek detector (github.com/trufflesecurity/trufflehog pkg/detectors/deepseek/deepseek.go): sk- + 32 lowercase alphanumeric",
@@ -225,13 +227,15 @@
       "fixtures": {
         "match": [
           "DEEPSEEK_API_KEY=sk-duu8wkernulhwb7g0ncfo1otofxycuyg",
-          "Authorization: Bearer sk-opslnxacaxmopm5g70kfg61k6oa3rnx7"
+          "Authorization: Bearer sk-opslnxacaxmopm5g70kfg61k6oa3rnx7",
+          "@@ -1 +0,0 @@\n-sk-duu8wkernulhwb7g0ncfo1otofxycuyg\n"
         ],
         "nomatch": [
           "sk-short",
           "sk-duu8wkernulhwb7g0ncfo1otofxycuy",
           "sk-DUU8WKERNULHWB7G0NCFO1OTOFXYCUYG",
-          "Authorization: Bearer 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"
+          "Authorization: Bearer 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",
+          "id=a-sk-duu8wkernulhwb7g0ncfo1otofxycuyg"
         ]
       }
     },

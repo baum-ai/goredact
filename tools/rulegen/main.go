@@ -20,6 +20,9 @@
 //	  "confidence": "high",                    // low | medium | high
 //	  "maxLookbehind": 0,                      // >= 0
 //	  "maxLookahead": 64,                      // >= 0
+//	  "block": {"begin": "...", "extend": "..."}, // optional: a block rule
+//	                                            // (rules.Block) masking to its
+//	                                            // end marker past the window
 //	  "provenance": {"source": "...", "license": "..."}, // both required
 //	  "fixtures": {
 //	    "match":   ["..."],  // >=1 required; inputs the rule MUST confirm

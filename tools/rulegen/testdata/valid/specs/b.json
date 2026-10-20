@@ -9,6 +9,7 @@
       "confidence": "low",
       "maxLookbehind": 0,
       "maxLookahead": 0,
+      "block": {"begin": "FakeBlockBegin", "extend": "FakeBlockExtend"},
       "provenance": {"source": "https://example.com/mmm", "license": "original"},
       "fixtures": {"match": ["zzz_mmm"], "nomatch": []}
     }

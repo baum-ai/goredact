@@ -45,3 +45,29 @@ func TestBuiltinsSortedAndNonEmpty(t *testing.T) {
 		t.Error("Version is empty")
 	}
 }
+
+// TestLineStartRulesSeeTheBytesBeforeTheirTrigger keeps the assumption
+// behind the validators' startsLine check valid: a rule that reads the
+// diff marker before its trigger, and asks whether that marker starts a
+// line, needs a lookbehind of two bytes, so the start of its window is the
+// start of a line only at the start of input.
+func TestLineStartRulesSeeTheBytesBeforeTheirTrigger(t *testing.T) {
+	needs := map[string]bool{
+		"pem-private-key":            true, // the BEGIN line's diff marker
+		"putty-private-key":          true, // the trigger line's diff marker
+		"openai-legacy-key":          true, // a removal marker before "sk-"
+		"deepseek-api-key":           true, // a removal marker before "sk-"
+		"command-line-password-flag": true, // a removal marker before "--password"
+	}
+	for _, r := range Builtins() {
+		if needs[r.ID] {
+			delete(needs, r.ID)
+			if r.MaxLookbehind < 2 {
+				t.Errorf("rule %q checks for a diff marker opening its trigger's line, so needs maxLookbehind >= 2, has %d", r.ID, r.MaxLookbehind)
+			}
+		}
+	}
+	for id := range needs {
+		t.Errorf("rule %q is not a built-in any more; update this test", id)
+	}
+}

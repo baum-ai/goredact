@@ -44,6 +44,7 @@ func TestValidSpecsGenerateSuccessfully(t *testing.T) {
 		"validators.FakeValidatorA",
 		"validators.FakeValidatorB",
 		"validators.FakeValidatorC",
+		"&Block{Begin: validators.FakeBlockBegin, Extend: validators.FakeBlockExtend}",
 	} {
 		if !bytes.Contains(rulesSrc, []byte(want)) {
 			t.Errorf("generated rules file missing %q\n---\n%s", want, rulesSrc)
@@ -133,6 +134,16 @@ func TestMissingFixtureFails(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "match fixture") {
 		t.Errorf("error does not mention missing match fixtures: %v", err)
+	}
+}
+
+func TestBlockWithoutExtendFails(t *testing.T) {
+	_, _, err := runGen(t, "testdata/badblock/specs")
+	if err == nil {
+		t.Fatal("run() error = nil, want an error for a block rule without an extend function")
+	}
+	if !strings.Contains(err.Error(), "block.extend") || !strings.Contains(err.Error(), "half-block") {
+		t.Errorf("error does not name the rule and its missing block.extend: %v", err)
 	}
 }
 

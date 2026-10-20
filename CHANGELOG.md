@@ -3,6 +3,69 @@
 All notable changes are documented here. This project follows semantic
 versioning.
 
+## Unreleased
+
+- **Fixed:** private keys are masked to their end, however long. The
+  `pem-private-key` and `putty-private-key` rules read at most 16 KiB past
+  their trigger, so a longer key — a large PGP private key block, for one —
+  kept its tail unmasked. Both rules still decide within that window, then
+  follow a key window by window to its END marker (or the end of its
+  Private-Lines section) and mask it as one finding. An unterminated key is
+  masked through its last body byte at the end of input. Every key marker
+  is followed on its own, so a key nested in another is masked to its own
+  end; scans of the same bytes meet and merge, so the work stays linear,
+  and a key longer than the buffer has its interior discarded, so memory
+  stays bounded. Where a scan resumes past a long run of separators or a
+  backslash run, those bytes are masked with the key even if it ends right
+  after them. Output inside a key that runs past the window is held until
+  the key ends. Callers that bound how far a span reaches past its trigger
+  (for example to cut text after redaction) must treat key blocks as
+  unbounded; detection still needs no more than 16 KiB past the trigger.
+- **Fixed:** PuTTY keys in unified diff patches. `putty-private-key`
+  required `Private-Lines:` at the start of a line, so a key on the `+`
+  lines of a patch was never detected. A header behind one diff marker
+  (`+`, `-` or space) now reads marked body lines and counts the old and
+  new file versions separately. A key follows the versions of its own
+  `PuTTY-User-Key-File-` line: an added key the new file, a removed key the
+  old one, a key whose first line is unchanged context both, stepping over
+  the other version's lines and its public lines until each version's
+  `Private-Lines:` header (within 16 KiB of the trigger; a stepped line
+  may end at most 512 bytes past that reach or past its own start, and
+  past the reach a section waiting for more lines ends after 64 stepped
+  lines). Added, removed, changed and rotated keys —
+  to another type or size, as `git diff` shows them — are masked; public
+  lines between two private sections of a changed key may be masked too. A
+  private line longer than the window is masked as far as it goes.
+- **Fixed:** PEM keys in patches follow their file version: an END line
+  on `-` lines no longer closes a key on `+` lines, nor the reverse, and a
+  context END closes both. Both key rules' lookbehind grows from 0 to 2
+  bytes to see the trigger line's marker.
+- **Fixed:** RFC 4880 armor headers after a BEGIN line (`Version: GnuPG
+  v1.4.11 (GNU/Linux)`, `Comment: "Alice" <alice@example.com>`) are taken
+  whole, so their bytes no longer end the scan before the key body; GnuPG
+  1.x keys were not detected at all. Up to 32 header lines of up to 1 KiB
+  are accepted, indented (as in a YAML block) or on diff lines, with ": ",
+  ":\t" or a bare ':' after the key, raw or JSON-escaped. Headers that run
+  past the 16 KiB window are followed into the next one, and such a block
+  is masked as a key even before its body is seen.
+- **Fixed:** the other checks anchored on what precedes a trigger accept a
+  diff removal marker. `command-line-password-flag` rejected
+  `---password=...` and `openai-legacy-key` and `deepseek-api-key` rejected
+  a `-` before `sk-`; a `-` that opens a line now counts as a boundary, so
+  a flag or key starting a removed line is masked. The two key rules'
+  lookbehind grows from 1 to 2 bytes.
+- Under `MaskLengthPreserving` and `MaskFormatPreserving`, the interior of
+  a key longer than `ChunkSize` is emitted as `*` bytes: masked, but its
+  shape depends on the chunk size.
+- The balanced profile's streaming lag bound grows by 2 bytes (the key
+  rules' lookbehind).
+- Internal: block rules (`rules.Block`, the rulegen spec field `block`) and
+  their engine continuation; the rule-set version changes. New benchmark
+  `BenchmarkRedactLongKeyBlocks` (about 615 MB/s on input that is mostly
+  64 KiB keys, against 430 MB/s for v0.2.0, which masked only their first
+  16 KiB; the quiet and noisy benchmarks are unchanged) and fuzz targets
+  `FuzzBlockChainMatchesWholeScan` and `FuzzEngineBlocks`.
+
 ## v0.2.0 — 2026-10-14
 
 - **Breaking:** the module path is now `github.com/baum-ai/goredact`,
