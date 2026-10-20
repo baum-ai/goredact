@@ -44,18 +44,24 @@ package goredact
 // to its end however long it is. Begin confirms the block within the
 // trigger's window; when the block runs past that window, the confirmed
 // span ends at a resume point and the engine queues a continuation
-// candidate there, whose window is the next MaxLookahead bytes. Validating
-// it (Extend) adds the adjacent span — the collector merges the two — and
-// either closes the block or queues the next continuation. A continuation
-// behaves like any queued candidate with no lookbehind and a zero-length
-// trigger at its resume point, so the invariants above hold unchanged: the
-// release limit stays below it, the held block span pins emission at its
-// start, and under buffer pressure the block's interior is discarded as a
-// gap. Memory stays bounded; output inside an open block waits for the
-// block to end. A trigger inside the extent a block of the same rule has
-// already been followed through (blockEnd) is confirmed within its own
-// window only: that block covers it, and nested markers cannot start
-// chains of their own and multiply the scanning work.
+// candidate there. Validating it (Extend) adds the adjacent span — the
+// collector merges the two — and either closes the block or queues the
+// next continuation. A continuation behaves like any queued candidate with
+// no lookbehind and a zero-length trigger at its resume point, so the
+// invariants above hold unchanged: the release limit stays below it, the
+// held block span pins emission at its start, and under buffer pressure
+// the block's interior is discarded as a gap. Memory stays bounded; output
+// inside an open block waits for the block to end.
+//
+// Every trigger is followed on its own, so a key nested in another (whose
+// scan may stop earlier, or on a different END line) is masked to its own
+// end. To keep the work linear, continuation windows end on a fixed grid
+// of absolute offsets (blockWindowEnd): two scans of the same rule over
+// the same bytes stop at the same places, and once their states agree — a
+// PEM scan's do after both have seen a plausible base64 run — they reach
+// the same (resume point, state), whose future is identical. The second
+// to get there stops (seenConts), so a nested key costs its own trigger
+// window and about one grid cell more.
 
 import (
 	"bytes"
@@ -162,6 +168,41 @@ func (c *candidate) windowStart(rules []rules.Rule) int64 {
 	return c.trigStart - int64(rules[c.rule].MaxLookbehind)
 }
 
+// windowEnd returns the absolute offset one past c's full validation
+// window: MaxLookahead past the trigger, or, for a continuation, the
+// block grid point blockWindowEnd chooses.
+func (c *candidate) windowEnd(rules []rules.Rule) int64 {
+	la := int64(rules[c.rule].MaxLookahead)
+	if c.cont {
+		return blockWindowEnd(c.trigStart, la)
+	}
+	return c.trigEnd + la
+}
+
+// Continuation windows end on multiples of blockGrid, at least
+// blockMinStep past their resume point (and never past the rule's
+// lookahead, so the retained overlap still covers them).
+const (
+	blockGrid    = 4096
+	blockMinStep = 1024
+)
+
+// blockWindowEnd returns where a continuation window resuming at at ends.
+// The end depends only on at's grid cell, which is what lets two scans of
+// the same bytes meet at the same resume points.
+func blockWindowEnd(at, lookahead int64) int64 {
+	end := (at + blockMinStep + blockGrid - 1) / blockGrid * blockGrid
+	return min(end, at+lookahead)
+}
+
+// contKey identifies a continuation: a scan of rule resuming at at with a
+// scanner state. Two continuations with the same key have the same future.
+type contKey struct {
+	rule  int
+	at    int64
+	state uint64
+}
+
 // scanState holds the pooled, reusable per-Redact allocations. All fields
 // are reset (length zero) before reuse; capacities are retained across
 // calls on the same Engine.
@@ -187,23 +228,20 @@ type scanState struct {
 	// invariant were violated, discarded input bytes could not leak.
 	scratch []byte
 
-	// blockEnd records, per rule index, the absolute offset up to which
-	// the latest block of that rule followed past its trigger window has
-	// been scanned: its resume point while open, its end once closed.
-	blockEnd []int64
+	// seenConts records the continuations created so far, so a scan that
+	// reaches one another scan already reached stops there. Entries before
+	// the retained buffer are pruned on flush: no scan resumes there any
+	// more.
+	seenConts map[contKey]struct{}
 
 	coll span.Collector
 }
 
-func (s *scanState) reset(nRules int) {
+func (s *scanState) reset() {
 	s.buf = s.buf[:0]
 	s.pending = s.pending[:0]
 	s.released = s.released[:0]
-	if cap(s.blockEnd) < nRules {
-		s.blockEnd = make([]int64, nRules)
-	}
-	s.blockEnd = s.blockEnd[:nRules]
-	clear(s.blockEnd)
+	clear(s.seenConts)
 	s.coll.Reset()
 }
 
@@ -242,7 +280,7 @@ func (e *Engine) redact(ctx context.Context, dst io.Writer, src io.Reader) (Stat
 		ctx = context.Background()
 	}
 	st := e.states.Get().(*scanState)
-	st.reset(len(e.rules.Rules))
+	st.reset()
 	defer e.states.Put(st)
 
 	r := &scanRun{e: e, st: st, w: span.NewMaskingWriter(dst, e.marker, e.cfg.MaskStrategy.internal()), src: src}
@@ -351,7 +389,7 @@ func (r *scanRun) onTrigger(pattern, end int) bool {
 			return true
 		}
 		c := candidate{rule: ri, trigStart: trigStart, trigEnd: trigEnd}
-		if trigEnd+int64(r.e.rules.Rules[ri].MaxLookahead) <= be {
+		if c.windowEnd(r.e.rules.Rules) <= be {
 			if err := r.validateChain(c, false); err != nil {
 				r.scanErr = err
 			}
@@ -366,10 +404,11 @@ func (r *scanRun) onTrigger(pattern, end int) bool {
 // is now fully buffered (or all of them, with truncated windows, at EOF)
 // and compacts the queue in place.
 //
-// Continuations go first: an open block follows its continuation into the
-// newly buffered bytes before any queued trigger there is validated, so a
-// trigger inside the block sees it covered (blockEnd) whatever order the
-// two were queued in. Otherwise the order of validation does not matter.
+// Continuations go first, so an open block reaches the newly buffered
+// bytes before a scan started by a trigger in them can: the open block
+// then holds the continuation points any later scan of the same bytes
+// meets (seenConts), whichever order the two were queued in. The order of
+// validation does not change the spans.
 func (r *scanRun) validatePending(eof bool) error {
 	for _, conts := range [2]bool{true, false} {
 		if len(r.st.pending) == 0 {
@@ -384,7 +423,7 @@ func (r *scanRun) validatePending(eof bool) error {
 		kept := 0
 		for i := 0; i < n; i++ {
 			c := r.st.pending[i]
-			if c.cont == conts && (eof || c.trigEnd+int64(r.e.rules.Rules[c.rule].MaxLookahead) <= be) {
+			if c.cont == conts && (eof || c.windowEnd(r.e.rules.Rules) <= be) {
 				if err := r.validateChain(c, eof); err != nil {
 					return err
 				}
@@ -401,14 +440,24 @@ func (r *scanRun) validatePending(eof bool) error {
 
 // validateChain validates c and, while that leaves a block open with the
 // next window already buffered (or at EOF), validates the continuation
-// too. A continuation whose window is not buffered yet is queued.
+// too. A continuation whose window is not buffered yet is queued. A
+// continuation another scan already reached ends the chain: that scan
+// masks everything this one would.
 func (r *scanRun) validateChain(c candidate, eof bool) error {
 	for {
 		next, open, err := r.validate(c)
 		if err != nil || !open {
 			return err
 		}
-		if !eof && next.trigEnd+int64(r.e.rules.Rules[next.rule].MaxLookahead) > r.bufEnd() {
+		key := contKey{rule: next.rule, at: next.trigStart, state: next.state}
+		if _, seen := r.st.seenConts[key]; seen {
+			return nil
+		}
+		if r.st.seenConts == nil {
+			r.st.seenConts = make(map[contKey]struct{})
+		}
+		r.st.seenConts[key] = struct{}{}
+		if !eof && next.windowEnd(r.e.rules.Rules) > r.bufEnd() {
 			r.st.pending = append(r.st.pending, next)
 			return nil
 		}
@@ -430,7 +479,7 @@ func (r *scanRun) validate(c candidate) (next candidate, open bool, err error) {
 	if wStart < r.bufBase {
 		wStart = r.bufBase
 	}
-	full := c.trigEnd + int64(rule.MaxLookahead)
+	full := c.windowEnd(r.e.rules.Rules)
 	wEnd := full
 	if be := r.bufEnd(); wEnd > be {
 		wEnd = be
@@ -451,11 +500,7 @@ func (r *scanRun) validate(c candidate) (next candidate, open bool, err error) {
 		ok = en > 0
 	case rule.Block != nil:
 		r.stats.Candidates++
-		// Inside a block of this rule that was followed past its window,
-		// this block is covered by it: confirm it within its own window
-		// only (final), so it cannot start a second chain.
-		covered := c.trigStart < r.st.blockEnd[c.rule]
-		s, en, state, open, ok, err = callBegin(rule, window, int(c.trigStart-wStart), int(c.trigEnd-wStart), final || covered)
+		s, en, state, open, ok, err = callBegin(rule, window, int(c.trigStart-wStart), int(c.trigEnd-wStart), final)
 	default:
 		r.stats.Candidates++
 		s, en, ok, err = callValidate(rule, window, int(c.trigStart-wStart), int(c.trigEnd-wStart))
@@ -470,10 +515,7 @@ func (r *scanRun) validate(c candidate) (next candidate, open bool, err error) {
 	}
 	if open {
 		resume := wStart + int64(en)
-		r.st.blockEnd[c.rule] = resume
 		next = candidate{rule: c.rule, trigStart: resume, trigEnd: resume, cont: true, state: state}
-	} else if c.cont && ok {
-		r.st.blockEnd[c.rule] = max(r.st.blockEnd[c.rule], wStart+int64(min(en, len(window))))
 	}
 	if !ok {
 		return next, open, nil
@@ -540,6 +582,11 @@ func callExtend(rule *rules.Rule, window []byte, state uint64, final bool) (en i
 // flush releases every span that can no longer grow, records findings,
 // and emits the safe prefix of the buffer.
 func (r *scanRun) flush(eof bool) error {
+	for k := range r.st.seenConts {
+		if k.at < r.bufBase {
+			delete(r.st.seenConts, k)
+		}
+	}
 	be := r.bufEnd()
 	releaseLimit := be
 	if !eof {

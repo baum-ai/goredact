@@ -44,7 +44,12 @@ credential-management mechanism.
    rule could still confirm a secret overlapping them. On error, already
    emitted output contains no unredacted confirmed secret.
 5. **Determinism.** Identical input + configuration + rule-set version
-   produce identical output, independent of chunking.
+   produce identical output, independent of chunking. (Exception: under
+   `MaskLengthPreserving` and `MaskFormatPreserving`, the interior of a
+   span longer than `ChunkSize`, such as a large private key, is discarded
+   under buffer pressure and emitted as `*` bytes, so its masked shape
+   depends on the chunk size. It is masked either way, and the default
+   `MaskFixedMarker` output does not depend on it.)
 
 ## Explicit non-guarantees (v0.1)
 
@@ -66,8 +71,8 @@ credential-management mechanism.
 | --- | --- |
 | Adversarial keyword floods causing validator storms | Validators run on bounded windows; per-candidate cost is capped; benchmarks include candidate-heavy corpora |
 | Secrets straddling chunk boundaries | Rule-derived overlap retention; fixtures test every boundary position |
-| Truncated multiline blocks (PEM) buffering forever | Detection is decided in a bounded window; a confirmed key is followed window by window to its end marker and masked whole, while its held interior is discarded under buffer pressure, so memory stays bounded; an unterminated block fails safe, masked through its last body byte at end of input; a key marker nested in an open key cannot start a second chain |
-| Multiline keys in diff patches | Line-anchored key grammar accepts one leading unified-diff marker (`+`, `-`, space) and counts the old and new file versions separately |
+| Truncated multiline blocks (PEM) buffering forever | Detection is decided in a bounded window; a confirmed key is followed window by window to its end marker and masked whole, while its held interior is discarded under buffer pressure, so memory stays bounded; an unterminated block fails safe, masked through its last body byte at end of input; every key marker is followed on its own, and scans of the same bytes meet on a fixed grid and merge, so nested markers cannot multiply the work |
+| Multiline keys in diff patches | Key grammars accept one leading unified-diff marker (`+`, `-`, space); a key follows the file versions of its trigger line, closes only on its own versions' END lines (PEM), and counts each version's PPK section separately, stepping over the other version's lines |
 | Panic on malformed input | Fuzzing of validators, parsers, span merging, and streaming boundaries; invalid UTF-8 and arbitrary bytes are first-class inputs |
 | Secret appears in error text | Error paths carry no input bytes by construction; enforced by tests and review |
 

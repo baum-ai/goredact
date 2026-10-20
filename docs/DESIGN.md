@@ -34,11 +34,14 @@ type BlockExtendFunc func(window []byte, state uint64, final bool) (end int, nex
 ```
 
 `final` reports that a window ends at the end of input. An open result's
-`end` is the last body byte decided so far and the resume point, so
-consecutive spans are adjacent and merge, and bytes after it are masked
-only if the block goes on past them.
-Detection stays window-bounded: only the masked extent is unbounded, and
-the scans decide every byte exactly as one unbounded scan would (fuzzed by
+`end` is the resume point, so consecutive spans are adjacent and merge.
+It is normally the last body byte decided so far, so bytes after it are
+masked only if the block goes on past them; where that would not advance
+the scan (a long run of separators, a backslash run or a line longer than
+the window), it is where the scan stopped, and the bytes before it are
+masked with the block. Detection stays window-bounded: only the masked
+extent is unbounded, and chained scans mask at least what one unbounded
+scan would, and at most a window and a line more (fuzzed by
 `FuzzBlockChainMatchesWholeScan`). `Validate` stays required for block
 rules and equals `Begin` with `final` set.
 
@@ -126,11 +129,15 @@ Requirements:
   candidate once its window is buffered. Its held span pins emission at the
   block's start, so output inside an open block waits for its end; under
   buffer pressure the block's interior is discarded as a gap, keeping memory
-  bounded. Queued candidates, continuations first, are validated before
-  newly read bytes are scanned, and a trigger inside the extent a block of
-  the same rule was followed through is confirmed within its own window
-  only, so nested markers cannot start parallel chains: the work stays
-  linear.
+  bounded. Every trigger is followed on its own, so a key nested in another
+  is masked to its own end. Continuation windows end on a fixed grid of
+  absolute offsets (4 KiB cells, at least 1 KiB past the resume point), so
+  scans of the same rule over the same bytes stop at the same places; once
+  their states agree they reach the same (resume point, state), and the
+  later scan stops there (`seenConts`, pruned behind the buffer). A nested
+  key therefore costs its trigger window and about one grid cell more: the
+  work stays linear. Queued candidates, continuations first, are validated
+  before newly read bytes are scanned.
 
 ## Cross-cutting invariants (enforced by tests/fuzz)
 

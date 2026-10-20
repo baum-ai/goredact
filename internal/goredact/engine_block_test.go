@@ -239,8 +239,9 @@ func countingBlocks(e *Engine) (beginBytes, extendBytes *int64) {
 }
 
 // TestEngineBlockWorkIsLinear checks the work bound: a long block costs
-// about one pass of Extend over its length, and BEGIN markers nested in an
-// open block do not start chains of their own, so they cannot multiply it.
+// about one pass of Extend over its length, and a BEGIN marker nested in an
+// open block starts a scan that stops where it meets the open block's, so
+// nested markers cannot multiply it.
 func TestEngineBlockWorkIsLinear(t *testing.T) {
 	lines := blockTestLines(12, 64)
 	var nested strings.Builder
@@ -270,9 +271,10 @@ func TestEngineBlockWorkIsLinear(t *testing.T) {
 				t.Fatalf("%s: want one marker for the whole block, got %d", where, strings.Count(out, DefaultMarker))
 			}
 			// Extend reads each byte about once (windows overlap by at most
-			// the resume reserve); each trigger's Begin reads one window, as
-			// any rule's validator does.
-			if limit := int64(len(input)) * 11 / 10; *extendBytes > limit {
+			// the resume reserve), plus, for a key nested in an open one,
+			// about one grid cell until its scan meets the open one's; each
+			// trigger's Begin reads one window, as any rule's validator does.
+			if limit := int64(len(input))*11/10 + stats.Candidates*(blockGrid+blockMinStep); *extendBytes > limit {
 				t.Fatalf("%s: Extend read %d bytes for a %d-byte input", where, *extendBytes, len(input))
 			}
 			if limit := (stats.Candidates + 1) * int64(e.window); *beginBytes > limit {

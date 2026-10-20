@@ -24,12 +24,6 @@ func isDigit(c byte) bool {
 	return c >= '0' && c <= '9'
 }
 
-// isDiffMarker reports whether c is one of the bytes that open a line of a
-// unified diff hunk: '+' (added), '-' (removed) or ' ' (context).
-func isDiffMarker(c byte) bool {
-	return c == '+' || c == '-' || c == ' '
-}
-
 // startsLine reports whether pos is the first byte of a line: the start of
 // window or the byte after a '\n'. The start of window is only the start
 // of a line when it is the start of input, so a rule using this to look at

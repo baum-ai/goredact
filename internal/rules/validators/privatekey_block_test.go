@@ -2,8 +2,10 @@ package validators
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 )
@@ -24,20 +26,25 @@ var (
 	ppkBlock = blockFuncs{"ppk", ppkTrig, PuTTYPrivateKeyBegin, PuTTYPrivateKeyExtend}
 )
 
+// blockLookbehind is both key rules' lookbehind: the trigger line's diff
+// marker and the byte before it.
+const blockLookbehind = 2
+
 // chainSpan replays the engine's windowing over text for a trigger at
-// trigStart (both rules have no lookbehind): Begin over the trigger window,
-// then Extend over each following lookahead-sized window while the block
-// is open. A window shorter than its lookahead ends the input (final).
-// opened reports whether the first window left the block open; windows
-// counts the Extend calls.
+// trigStart: Begin over the trigger window, then Extend over each
+// following lookahead-sized window while the block is open. A window
+// shorter than its lookahead ends the input (final). opened reports
+// whether the first window left the block open; windows counts the Extend
+// calls.
 func chainSpan(f blockFuncs, text []byte, trigStart, lookahead int) (start, end int, ok, opened bool, windows int) {
 	trigEnd := trigStart + len(f.trigger)
+	ws := max(trigStart-blockLookbehind, 0)
 	wEnd := min(trigEnd+lookahead, len(text))
-	s, e, state, open, ok := f.begin(text[trigStart:wEnd], 0, len(f.trigger), wEnd < trigEnd+lookahead)
+	s, e, state, open, ok := f.begin(text[ws:wEnd], trigStart-ws, trigEnd-ws, wEnd < trigEnd+lookahead)
 	if !ok {
 		return 0, 0, false, false, 0
 	}
-	start, end, opened = trigStart+s, trigStart+e, open
+	start, end, opened = ws+s, ws+e, open
 	for open {
 		base := end
 		wEnd := min(base+lookahead, len(text))
@@ -51,8 +58,9 @@ func chainSpan(f blockFuncs, text []byte, trigStart, lookahead int) (start, end 
 
 // wholeSpan is the block decided in one window holding all of text.
 func wholeSpan(f blockFuncs, text []byte, trigStart int) (start, end int, ok bool) {
-	s, e, _, _, ok := f.begin(text[trigStart:], 0, len(f.trigger), true)
-	return trigStart + s, trigStart + e, ok
+	ws := max(trigStart-blockLookbehind, 0)
+	s, e, _, _, ok := f.begin(text[ws:], trigStart-ws, trigStart-ws+len(f.trigger), true)
+	return ws + s, ws + e, ok
 }
 
 func synthB64Lines(rng *rand.Rand, n, width int) []string {
@@ -118,7 +126,7 @@ func TestPEMBlockMasksToEndMarker(t *testing.T) {
 			if !ok || !opened || start != trigStart || end != wantEnd {
 				t.Fatalf("%s, lookahead %d: span [%d,%d) ok=%v opened=%v, want [%d,%d)", name, lookahead, start, end, ok, opened, trigStart, wantEnd)
 			}
-			if windows < len(block)/lookahead-1 || windows > len(block)/(lookahead-pemResumeReserve-8)+2 {
+			if windows < len(block)/lookahead-1 || windows > len(block)/(lookahead-pemResumeReserve-pemResumeLag)+2 {
 				t.Errorf("%s, lookahead %d: %d extend windows for a %d-byte block", name, lookahead, windows, len(block))
 			}
 		}
@@ -302,9 +310,11 @@ func TestBlockBeginFinalMatchesValidate(t *testing.T) {
 }
 
 // FuzzBlockChainMatchesWholeScan checks the resumable scans: whenever the
-// trigger window leaves a block open, chaining windows decides the block
-// exactly as one window holding the whole input does; otherwise the block
-// is decided within the trigger window alone.
+// trigger window leaves a block open, chaining windows masks at least what
+// one window holding the whole input does, from the same start, and only
+// what a resume point had to mask on top: separators past a PEM body's
+// last base64 byte, or PPK lines stepped over (at most a window and a
+// line). Otherwise the block is decided within the trigger window alone.
 func FuzzBlockChainMatchesWholeScan(f *testing.F) {
 	f.Add([]byte("RSA PRIVATE KEY-----\n"+pemB64LineA+"\n"+pemB64LineB+"\n-----END RSA PRIVATE KEY-----\n"), uint8(0), uint16(300))
 	f.Add([]byte("2: ssh-rsa\n+Private-Lines: 3\n+"+pemB64LineA+"\n+"+pemB64LineB+"\n+"+pemB64LineC+"\n"), uint8(1), uint16(200))
@@ -318,14 +328,7 @@ func FuzzBlockChainMatchesWholeScan(f *testing.F) {
 			fn = ppkBlock
 		}
 		text := append([]byte(fn.trigger), data...)
-		// The chained scan gives up on a line, or a backslash run, that
-		// does not fit in a window; keep windows several times longer, and
-		// longer than a resume point can lag the scan (pemMaxGap).
-		longest := 0
-		for _, line := range bytes.Split(text, []byte("\n")) {
-			longest = max(longest, len(line))
-		}
-		lookahead := max(2*pemResumeReserve+pemMaxGap+1, 3*longest+int(la)%1024)
+		lookahead := 2*pemResumeReserve + pemResumeLag + 1 + int(la)%1024
 
 		start, end, ok, opened, _ := chainSpan(fn, text, 0, lookahead)
 		var wantS, wantE int
@@ -336,7 +339,19 @@ func FuzzBlockChainMatchesWholeScan(f *testing.F) {
 			wEnd := min(len(fn.trigger)+lookahead, len(text))
 			wantS, wantE, wantOK = wholeSpan(fn, text[:wEnd], 0)
 		}
-		if ok != wantOK || ok && (start != wantS || end != wantE) {
+		longest := 0
+		for _, line := range bytes.Split(text, []byte("\n")) {
+			longest = max(longest, len(line))
+		}
+		over := end - wantE
+		// PPK lines stepped over while a header may still come (within
+		// ppkHeaderReach of the trigger), and past it up to ppkMaxStepLines
+		// of at most ppkMaxStepLine bytes, are masked across windows.
+		extraOK := end <= max(wantE, len(fn.trigger)+ppkHeaderReach)+lookahead+longest+ppkMaxStepLines*(ppkMaxStepLine+1)
+		if fn.name == "pem" && over > 0 {
+			extraOK = pemSeparatorsOnly(text[wantE:end])
+		}
+		if ok != wantOK || ok && (start != wantS || over < 0 || !opened && over != 0 || !extraOK) {
 			t.Fatalf("%s lookahead %d opened=%v: chained (%d,%d,%v), want (%d,%d,%v)", fn.name, lookahead, opened, start, end, ok, wantS, wantE, wantOK)
 		}
 		if ok && (start < 0 || end <= start || end > len(text)) {
@@ -362,4 +377,48 @@ func TestBlockExtendArbitraryState(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestPPKHeaderReachMatchesSpec: ppkHeaderReach, how far past its trigger
+// a PPK header may start, is the putty-private-key rule's lookahead, so a
+// key's headers are found within the window its detection is decided in.
+func TestPPKHeaderReachMatchesSpec(t *testing.T) {
+	data, err := os.ReadFile("../specs/private-keys.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec struct {
+		Rules []struct {
+			ID           string `json:"id"`
+			MaxLookahead int    `json:"maxLookahead"`
+		} `json:"rules"`
+	}
+	if err := json.Unmarshal(data, &spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range spec.Rules {
+		if r.ID == "putty-private-key" && r.MaxLookahead != ppkHeaderReach {
+			t.Fatalf("putty-private-key maxLookahead %d, ppkHeaderReach %d", r.MaxLookahead, ppkHeaderReach)
+		}
+	}
+}
+
+// pemSeparatorsOnly reports whether b holds no key material: only bytes a
+// PEM body scan passes between base64 runs (whitespace, ':', ',', '-',
+// and backslash escapes).
+func pemSeparatorsOnly(b []byte) bool {
+	for i := 0; i < len(b); i++ {
+		switch c := b[i]; {
+		case c == '\\':
+			for i+1 < len(b) && b[i+1] == '\\' {
+				i++
+			}
+			if i+1 < len(b) && strings.IndexByte("nrt\"", b[i+1]) >= 0 {
+				i++
+			}
+		case pemBase64[c]:
+			return false
+		}
+	}
+	return true
 }

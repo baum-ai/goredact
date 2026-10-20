@@ -11,10 +11,13 @@ versioning.
   kept its tail unmasked. Both rules still decide within that window, then
   follow a key window by window to its END marker (or the end of its
   Private-Lines section) and mask it as one finding. An unterminated key is
-  masked through its last body byte at the end of input. Memory stays
-  bounded and the work linear: a key longer than the buffer has its
-  interior discarded, and a key marker nested in an open key cannot start a
-  second scan. Output inside a key that runs past the window is held until
+  masked through its last body byte at the end of input. Every key marker
+  is followed on its own, so a key nested in another is masked to its own
+  end; scans of the same bytes meet and merge, so the work stays linear,
+  and a key longer than the buffer has its interior discarded, so memory
+  stays bounded. Where a scan resumes past a long run of separators or a
+  backslash run, those bytes are masked with the key even if it ends right
+  after them. Output inside a key that runs past the window is held until
   the key ends. Callers that bound how far a span reaches past its trigger
   (for example to cut text after redaction) must treat key blocks as
   unbounded; detection still needs no more than 16 KiB past the trigger.
@@ -22,9 +25,24 @@ versioning.
   required `Private-Lines:` at the start of a line, so a key on the `+`
   lines of a patch was never detected. A header behind one diff marker
   (`+`, `-` or space) now reads marked body lines and counts the old and
-  new file versions separately, so added, removed and changed keys are
-  masked and their public lines kept. PEM keys in patches were already
-  detected and are now masked to their end too.
+  new file versions separately. A key follows the versions of its own
+  `PuTTY-User-Key-File-` line: an added key the new file, a removed key the
+  old one, a key whose first line is unchanged context both, stepping over
+  the other version's lines and its public lines until each version's
+  `Private-Lines:` header (within 16 KiB of the trigger; past that, a
+  section waiting for more lines ends after 64 lines no count needs, or at
+  one longer than 512 bytes). Added, removed, changed and rotated keys —
+  to another type or size, as `git diff` shows them — are masked; public
+  lines between two private sections of a changed key may be masked too. A
+  private line longer than the window is masked as far as it goes.
+- **Fixed:** PEM keys in patches follow their file version: an END line
+  on `-` lines no longer closes a key on `+` lines, nor the reverse, and a
+  context END closes both. Both key rules' lookbehind grows from 0 to 2
+  bytes to see the trigger line's marker.
+- **Fixed:** RFC 4880 armor headers after a BEGIN line (`Version: GnuPG
+  v1.4.11 (GNU/Linux)`, `Comment: ...`) are taken whole, so their bytes no
+  longer end the scan before the key body; GnuPG 1.x keys were not
+  detected at all.
 - **Fixed:** the other checks anchored on what precedes a trigger accept a
   diff removal marker. `command-line-password-flag` rejected
   `---password=...` and `openai-legacy-key` and `deepseek-api-key` rejected
@@ -34,12 +52,14 @@ versioning.
 - Under `MaskLengthPreserving` and `MaskFormatPreserving`, the interior of
   a key longer than `ChunkSize` is emitted as `*` bytes: masked, but its
   shape depends on the chunk size.
+- The balanced profile's streaming lag bound grows by 2 bytes (the key
+  rules' lookbehind).
 - Internal: block rules (`rules.Block`, the rulegen spec field `block`) and
   their engine continuation; the rule-set version changes. New benchmark
-  `BenchmarkRedactLongKeyBlocks` (570 MB/s on input that is mostly 64 KiB
-  keys, against 430 MB/s for v0.2.0, which masked only their first 16 KiB;
-  the quiet and noisy benchmarks are unchanged) and fuzz target
-  `FuzzBlockChainMatchesWholeScan`.
+  `BenchmarkRedactLongKeyBlocks` (about 615 MB/s on input that is mostly
+  64 KiB keys, against 430 MB/s for v0.2.0, which masked only their first
+  16 KiB; the quiet and noisy benchmarks are unchanged) and fuzz targets
+  `FuzzBlockChainMatchesWholeScan` and `FuzzEngineBlocks`.
 
 ## v0.2.0 — 2026-10-14
 
