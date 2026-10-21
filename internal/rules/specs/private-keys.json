@@ -12,7 +12,7 @@
       "validator": "PEMPrivateKey",
       "minProfile": "fast",
       "confidence": "high",
-      "maxLookbehind": 2,
+      "maxLookbehind": 67,
       "maxLookahead": 16384,
       "provenance": {
         "source": "https://datatracker.ietf.org/doc/html/rfc7468",
@@ -26,13 +26,17 @@
           "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,A1B2C3D4E5F60718293A4B5C6D7E8F90\n\ntLQfbEBiLk97Gc+CQPmipyAB7Ve5n/Vw+LWbnt0ao6mWMkOGu4gFlxRMIzmEBqeo\n6jNqZ5NfymdkR6RBmPsCQ9qLSdrpmeeEsJS0XG6On2Vu+B2s17OWsV0yKXc0ubiG\n-----END RSA PRIVATE KEY-----\n",
           "-----BEGIN PRIVATE KEY-----\npXIKj1muE8wjxUB4P1NbhSPqyP1epR04JEmb6DTk/MjMhfvfk9bIc/z+mHPIuvz/\n2xmt9Ru7t5EBG+JmdLz4/hKQL6tv1KsQb7VSpSIMeFwomJ620IQMBajXgnRC8f0w\nYmicg//E+BFDyb76VongDyy7sllrDOdbcTeMkg5yJvwRQXxIaYNi0BhkMfrL08Lz",
           "{\"tool_result\": \"{\\\"output\\\": \\\"-----BEGIN RSA PRIVATE KEY-----\\\\nrpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\\\\n2uCmH6CHd67YEB0uS5MMuWrzaXnJ0gfBwd91bSrUJj9LZRsK1PbRQUyZJjzlxYuw\\\\n-----END RSA PRIVATE KEY-----\\\\n\\\"}\"}",
-          "@@ -0,0 +1,4 @@\n+-----BEGIN EC PRIVATE KEY-----\n+rpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\n+JNHCUb7b3BpnOGRLa+2yMuias21KPFR8Axm4JzRUdrDSzQz+J0dAs2b7Dic7gm2O\n+-----END EC PRIVATE KEY-----\n"
+          "@@ -0,0 +1,4 @@\n+-----BEGIN EC PRIVATE KEY-----\n+rpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\n+JNHCUb7b3BpnOGRLa+2yMuias21KPFR8Axm4JzRUdrDSzQz+J0dAs2b7Dic7gm2O\n+-----END EC PRIVATE KEY-----\n",
+          "> -----BEGIN EC PRIVATE KEY-----\n> rpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\n> 2uCmH6CHd67YEB0uS5MMuWrzaXnJ0gfBwd91bSrUJj9LZRsK1PbRQUyZJjzlxYuw\n> -----END EC PRIVATE KEY-----\n> thanks\n",
+          "{\"key\":\"-----BEGIN RSA PRIVATE KEY-----\\nrmqoDH0qVi\\/huXgpY1qHTa43gddwT5TXFrrNosHPdl19o2Z+\\/7piAa2GqytsZN3C\\nrpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\\n-----END RSA PRIVATE KEY-----\\n\"}",
+          "var key = \"-----BEGIN PRIVATE KEY-----\\n\" +\n\t\"2uCmH6CHd67YEB0uS5MMuWrzaXnJ0gfBwd91bSrUJj9LZRsK1PbRQUyZJjzlxYuw\\n\" +\n\t\"rmqoDH0qVi/huXgpY1qHTa43gddwT5TXFrrNosHPdl19o2Z+/7piAa2GqytsZN3C\\n\" +\n\t\"-----END PRIVATE KEY-----\\n\"\n"
         ],
         "nomatch": [
           "-----BEGIN CERTIFICATE-----\nFc6xc4/fGGyOOMLU524WciLQYdWNI1g0r0yU5Zt2vWuLiLGoL4my/oP7adWIj2Rk\n-----END CERTIFICATE-----\n",
           "-----BEGIN PUBLIC KEY-----\nDgTef9Rdy/5scNY8uQgLKB9qLJNYHnvJ51I7WIcAmgkh28NbBFn9gqwcO8ma5pJ9\n-----END PUBLIC KEY-----\n",
           "-----BEGIN PRIVATE KEY----- is the PEM header",
-          "-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n"
+          "-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n",
+          "> -----BEGIN PRIVATE KEY-----\n> (paste the key here)\n> -----END PRIVATE KEY-----\n"
         ]
       },
       "block": {
@@ -52,7 +56,7 @@
       "validator": "PuTTYPrivateKey",
       "minProfile": "fast",
       "confidence": "high",
-      "maxLookbehind": 2,
+      "maxLookbehind": 67,
       "maxLookahead": 16384,
       "provenance": {
         "source": "https://tartarus.org/~simon/putty-snapshots/htmldoc/AppendixC.html",
@@ -63,7 +67,9 @@
           "PuTTY-User-Key-File-2: ssh-rsa\nEncryption: none\nComment: synthetic-fixture\nPublic-Lines: 2\nJNHCUb7b3BpnOGRLa+2yMuias21KPFR8Axm4JzRUdrDSzQz+J0dAs2b7Dic7gm2O\nHwdixVZHihKkCBzhlDoM4CMLCKwn83R/n895ffXcXqy9pHuEd0qu9765175ufW5h\nPrivate-Lines: 2\ntLQfbEBiLk97Gc+CQPmipyAB7Ve5n/Vw+LWbnt0ao6mWMkOGu4gFlxRMIzmEBqeo\n6jNqZ5NfymdkR6RBmPsCQ9qLSdrpmeeEsJS0XG6On2Vu+B2s17OWsV0yKXc0ubiG\nPrivate-MAC: 6f1c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c\n",
           "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\nComment: synthetic-truncated\nPublic-Lines: 1\nFc6xc4/fGGyOOMLU524WciLQYdWNI1g0r0yU5Zt2vWuLiLGoL4my/oP7adWIj2Rk\nPrivate-Lines: 6\nrpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\nrmqoDH0qVi/huXgpY1qHTa43gddwT5TXFrrNosHPdl19o2Z+",
           "@@ -0,0 +1,9 @@\n+PuTTY-User-Key-File-2: ssh-rsa\n+Encryption: none\n+Comment: synthetic-diff\n+Public-Lines: 1\n+rpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\n+Private-Lines: 2\n+JNHCUb7b3BpnOGRLa+2yMuias21KPFR8Axm4JzRUdrDSzQz+J0dAs2b7Dic7gm2O\n+tLQfbEBiLk97Gc+CQPmipyAB7Ve5n/Vw+LWbnt0ao6mWMkOGu4gFlxRMIzmEBqeo\n+Private-MAC: 6f1c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c\n",
-          "@@ -1,7 +1,7 @@\n PuTTY-User-Key-File-3: ssh-ed25519\n Encryption: none\n Public-Lines: 1\n rpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\n Private-Lines: 1\n-tLQfbEBiLk97Gc+CQPmipyAB7Ve5n/Vw+LWbnt0ao6mWMkOGu4gFlxRMIzmEBqeo\n-Private-MAC: 0a1b2c3d4e5f60718293a4b5c6d7e8f9\n+6jNqZ5NfymdkR6RBmPsCQ9qLSdrpmeeEsJS0XG6On2Vu+B2s17OWsV0yKXc0ubiG\n+Private-MAC: 9f8e7d6c5b4a39281706f5e4d3c2b1a0\n"
+          "@@ -1,7 +1,7 @@\n PuTTY-User-Key-File-3: ssh-ed25519\n Encryption: none\n Public-Lines: 1\n rpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\n Private-Lines: 1\n-tLQfbEBiLk97Gc+CQPmipyAB7Ve5n/Vw+LWbnt0ao6mWMkOGu4gFlxRMIzmEBqeo\n-Private-MAC: 0a1b2c3d4e5f60718293a4b5c6d7e8f9\n+6jNqZ5NfymdkR6RBmPsCQ9qLSdrpmeeEsJS0XG6On2Vu+B2s17OWsV0yKXc0ubiG\n+Private-MAC: 9f8e7d6c5b4a39281706f5e4d3c2b1a0\n",
+          "{\"ppk\":\"PuTTY-User-Key-File-3: ssh-ed25519\\nEncryption: none\\nComment: synthetic-json\\nPublic-Lines: 1\\nrpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\\nPrivate-Lines: 1\\n2uCmH6CHd67YEB0uS5MMuWrzaXnJ0gfBwd91bSrUJj9LZRsK1PbRQUyZJjzlxYuw\\nPrivate-MAC: 0a1b2c3d4e5f60718293a4b5c6d7e8f9\\n\"}",
+          "key: |\n  PuTTY-User-Key-File-2: ssh-rsa\n  Encryption: none\n  Public-Lines: 1\n  rpvGMXOAKGX6B+kpekdCsOtzCoV+ZuCNdBcPTT9hA6rOjKjGc6MefdDU8p5oXcY7\n  Private-Lines: 2\n  2uCmH6CHd67YEB0uS5MMuWrzaXnJ0gfBwd91bSrUJj9LZRsK1PbRQUyZJjzlxYuw\n  rmqoDH0qVi/huXgpY1qHTa43gddwT5TXFrrNosHPdl19o2Z+/7piAa2GqytsZN3C\n  Private-MAC: 6f1c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c\n"
         ],
         "nomatch": [
           "PuTTY-User-Key-File-9: ssh-rsa\nEncryption: none\nPrivate-Lines: 1\npXIKj1muE8wjxUB4P1NbhSPqyP1epR04JEmb6DTk/MjMhfvfk9bIc/z+mHPIuvz/\n",

@@ -3,6 +3,57 @@
 All notable changes are documented here. This project follows semantic
 versioning.
 
+## Unreleased
+
+- **Fixed:** private keys in string literals escaped by PHP and .NET JSON
+  encoders. `json_encode` writes '/' as `\/` and System.Text.Json writes
+  '+' as `\u002B` (and '"' as `\u0022`); the key scans stopped at the first
+  such escape, so only the BEGIN line and the first base64 run were masked,
+  or nothing. Both rules now read `\/`, `\uXXXX` escapes of base64 bytes and
+  separators, and escaped line feeds after any backslash run (JSON inside
+  JSON).
+- **Fixed:** keys whose lines carry a prefix were not detected: quoted in
+  an email or Markdown (`> `, `> > `, `>> `), commented out (`# `, ` * `,
+  `; `), line-numbered as agent transcripts show a file (`     12→`, raw
+  or as `\u2192`), or concatenated from one string literal per line
+  (`"...\n" +`, `+ "...\n"`, `'...' +`, in Go, Java, JavaScript and
+  Python sources). At the start of every line, after a raw or an escaped
+  line feed, the scans skip a line frame of up to 64 bytes — quote and
+  comment markers, a line number followed by a tab or an arrow, an
+  indentation, an opening quote, a leading `+` — and take a quote closing
+  a string literal's line with its line break. A diff marker may precede
+  the frame (`+> `, `+\t"` on a patch of Go source), so both rules'
+  lookbehind grows from 2 to 67 bytes to read the trigger line from its
+  start; a removed line's `-` before a frame is read too when the trigger
+  line holds more than a marker and a frame (`-var key = "-----BEGIN`).
+  `// ` comments and `cat -n` line numbers were already masked.
+- **Fixed:** PuTTY keys JSON-escaped (lines broken by `\n`) or indented by
+  two or more spaces (a YAML block) were never detected. The
+  `Private-Lines:` header and the body lines are read with the same
+  frames, escapes and line ends as PEM lines; a header indented by spaces
+  reads as a context line, so its body lines are counted as context.
+- **Fixed:** a key spanning two hunks of a patch leaked from the second
+  hunk on: the scans stopped at the `@@ -a,b +c,d @@` header. A hunk header
+  inside a key is now skipped and masked with the key (git may put a key
+  line in its section heading), and the key is followed into the next
+  hunk, for PEM and PuTTY keys.
+- **Fixed:** base64 lines past a PuTTY `Private-Lines` count that is too
+  low leaked. Up to 100 further lines of at most 512 bytes are masked up
+  to the `Private-MAC:` line: a line of 16 or more base64 bytes, one that
+  ends with '=' padding, or a shorter one directly before the MAC line,
+  also in a patch (on a version whose count is done, past hunk headers).
+  A well-formed file is masked as before.
+- The rule-set version changes. The balanced profile's streaming lag
+  bound grows by 65 bytes (the key rules' lookbehind), to 16,633 bytes,
+  and the smallest accepted `Config.ChunkSize` with both key rules active
+  from 32,812 to 32,942 bytes.
+- Internal: new fuzz target `FuzzEngineKeyShapes` runs the block checks on
+  key-shaped text behind line prefixes, concatenated, JSON-escaped and
+  split by hunk headers; new synthetic fixtures for quoted, escaped,
+  concatenated and indented keys. `BenchmarkRedactLongKeyBlocks` runs
+  about 4% slower (about 600 MB/s); the quiet and noisy benchmarks and
+  `make bench-ci` are unchanged.
+
 ## v0.3.0 — 2026-10-20
 
 - **Fixed:** private keys are masked to their end, however long. The

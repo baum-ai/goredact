@@ -48,6 +48,18 @@ that reads the diff marker of its trigger's line declares
 the start of the window is the start of a line only at the start of input
 (`TestLineStartRulesSeeTheBytesBeforeTheirTrigger`).
 
+A block rule reads every line of its block, so its line grammar must also
+accept what a log or a source puts around each line: the escapes of a
+string literal, a line frame (a quote or comment marker, a line number,
+an indentation, an opening quote), the end of a concatenated string line
+and a hunk header between two hunks. `internal/rules/validators/keylines.go`
+holds those shapes for the private-key rules. A frame may sit between a
+line's diff marker and its trigger, so those rules declare
+`maxLookbehind: 67` (`keyLookbehind`: the marker, a 64-byte frame and the
+line break before them; `TestKeyLookbehindMatchesSpec`), and the start of
+their window is the start of a line only when it holds fewer bytes before
+the trigger.
+
 After changing a rule:
 
 ```sh

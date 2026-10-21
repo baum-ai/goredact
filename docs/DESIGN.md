@@ -45,6 +45,20 @@ scan would, and at most a window and a line more (fuzzed by
 `FuzzBlockChainMatchesWholeScan`). `Validate` stays required for block
 rules and equals `Begin` with `final` set.
 
+The two key rules read a key's lines in the shapes they take in logs,
+transcripts, patches and sources (`internal/rules/validators/keylines.go`):
+in string literals, with the escapes of JSON encoders (`\n`, `\"`, PHP's
+`\/`, .NET's `\u002B`, any backslash run for JSON inside JSON); behind a
+line frame of up to 64 bytes, read at the start of every line (an email or
+Markdown quote, a comment marker, a line number with a tab or an arrow, an
+indentation, an opening quote); with a quote closing a concatenated string
+line (`"...\n" +`); and across a unified diff hunk header, which is masked
+with the key (git may give it a key line as its section heading). Their
+lookbehind (67 bytes) holds the trigger line's frame, its diff marker and
+the line break before them, so a marked line is recognised behind a frame
+(`+> -----BEGIN`). A PuTTY section whose `Private-Lines` count is too low
+takes up to 100 further base64 lines up to its `Private-MAC` line.
+
 ### `internal/ahocorasick`
 
 Pure-Go Aho–Corasick over bytes. Contract:
