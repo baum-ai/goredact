@@ -396,3 +396,25 @@ func TestPPKChainStepsBackslashRunLine(t *testing.T) {
 		}
 	}
 }
+
+// TestPEMChainArmorQuoteBeforeBackslashRun: an escaped armor header line
+// whose value ends in a quote, spaces and a backslash run longer than a
+// window is decided the same in every window as in one scan of the whole
+// input (a run over keyRunMax backslashes is no line break), so the chain
+// does not end at the header line while the whole scan reads the body.
+func TestPEMChainArmorQuoteBeforeBackslashRun(t *testing.T) {
+	for _, n := range []int{100, 566, 3000} {
+		text := []byte(pemTrig + `PRIVATE KEY-----\nA:` + strings.Repeat(`\"`, 11) + strings.Repeat("0", 1002) + `"` +
+			strings.Repeat(" ", 24) + strings.Repeat(`\`, n))
+		wantS, wantE, ok := wholeSpan(pemBlock, text, 0)
+		if !ok {
+			t.Fatalf("run %d: no key", n)
+		}
+		for la := pemArmorWindowMin; la < pemArmorWindowMin+900; la += 7 {
+			start, end, ok, _, _ := chainSpan(pemBlock, text, 0, la)
+			if !ok || start != wantS || end < wantE {
+				t.Fatalf("run %d, lookahead %d: chained [%d,%d) ok=%v, whole [%d,%d)", n, la, start, end, ok, wantS, wantE)
+			}
+		}
+	}
+}

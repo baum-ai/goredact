@@ -36,6 +36,14 @@ const (
 
 	// keyNumberMax bounds the digits of a line number frame.
 	keyNumberMax = 9
+
+	// keyRunMax bounds the backslash run of an escape a lookahead decides
+	// before the scan reaches it (an escaped quote or line break closing a
+	// string literal's line, an armor header line's break): 63 is JSON
+	// nested six deep. A longer run is no such escape, decided once
+	// keyRunMax+1 backslashes are in view, so a window that holds the line
+	// decides it as one scan of the whole input does.
+	keyRunMax = 64
 )
 
 // bsRunEnd returns the offset one past the run of backslashes at i.
@@ -190,10 +198,13 @@ func keyBreak(w []byte, p int) (end int, ok, need bool) {
 // and the concatenation operators of PHP ('.') and Visual Basic ("& _",
 // "& vbLf & _"),
 // and a line break. at is where that line break starts, end one past it.
+// Escapes take at most keyRunMax backslashes.
 func keyQuoteTail(w []byte, p int) (at, end int, ok, need bool) {
 	q := p
 	if q < len(w) && w[q] == '\\' {
-		q = bsRunEnd(w, q)
+		if q = bsRunEnd(w, q); q-p > keyRunMax {
+			return 0, 0, false, false
+		}
 	}
 	if q >= len(w) {
 		return 0, 0, false, true
@@ -210,6 +221,9 @@ func keyQuoteTail(w []byte, p int) (at, end int, ok, need bool) {
 			break
 		}
 		q++
+	}
+	if q < len(w) && w[q] == '\\' && bsRunEnd(w, q)-q > keyRunMax {
+		return 0, 0, false, false
 	}
 	end, ok, need = keyBreak(w, q)
 	return q, end, ok, need

@@ -453,4 +453,4 @@ func pemNoBody(text []byte, at, end int) bool {
 
 // pemArmorWindowMin is the shortest window that holds a whole armor header
 // line: value, key, indentation, separator, marker and line breaks.
-const pemArmorWindowMin = pemArmorLineMax + pemLabelMax + keyFrameMax + 16
+const pemArmorWindowMin = pemArmorLineMax + pemLabelMax + keyFrameMax + keyTailMax + 2*keyRunMax + 16

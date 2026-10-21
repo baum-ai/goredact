@@ -250,6 +250,9 @@ const (
 // keyLineEnd). end is one past it.
 func pemArmorBreak(window []byte, pos int, escaped bool) (end int, ok, need bool) {
 	if escaped {
+		if pos < len(window) && window[pos] == '\\' && bsRunEnd(window, pos)-pos > keyRunMax {
+			return 0, false, false // no line break: decided in any window holding the line
+		}
 		return keyLineEnd(window, pos)
 	}
 	if pos < len(window) && (window[pos] == '"' || window[pos] == '\'') {
@@ -336,6 +339,9 @@ func pemArmorLine(window []byte, end int, escaped, final bool) (lineEnd int, ok,
 			return 0, false, false // the end of the JSON string
 		case escaped && c == '\\':
 			j := bsRunEnd(window, p)
+			if j-p > keyRunMax {
+				return 0, false, false
+			}
 			if j >= len(window) {
 				return 0, false, !final
 			}
