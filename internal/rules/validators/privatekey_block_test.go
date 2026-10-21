@@ -423,24 +423,28 @@ func TestPPKHeaderReachMatchesSpec(t *testing.T) {
 // offsets at and end of text: only bytes it passes between base64 runs
 // (whitespace, ':', ',', '-', backslash escapes, line frames, quote tails
 // and hunk header lines), which a chained scan may mask past a body's
-// last base64 byte, up to a backslash run the end cuts. The scan is tried
-// outside and in diff mode.
+// last base64 byte. The scan reads the text past end too, so a token that
+// the chain took whole across end (a backslash run, a quote and the line
+// break after it) is judged with all its bytes in view; it stops at the
+// first token boundary at or past end, or at a backslash run across end.
+// It is tried outside and in diff mode.
 func pemNoBody(text []byte, at, end int) bool {
 	for _, diff := range []bool{false, true} {
 		s := pemScanner{plausible: true, lastB64End: -1, frameEnd: -1, diff: diff, sides: diffOld | diffNew}
-		window := text[at:end]
+		window := text[at:]
 		i := 0
 		if at == 0 || keyAfterBreak(text, at) {
 			s.nl = true
 			i, _ = s.lineStart(window, 0, true)
 		}
-		pos, stop := s.scan(window, i, -1, true)
+		pos, stop := s.scan(window, i, end-at, true)
 		if s.lastB64End >= 0 {
 			continue
 		}
-		// The scan reads the bytes through the end, or stops at a
-		// backslash run the end cuts (a chain resumes inside it).
-		if pos >= len(window) && stop == pemStopWindow || stop == pemStopJunk && pos < len(window) && bsRunEnd(window, pos) == len(window) {
+		// The scan passes end, or stops at a backslash run that crosses
+		// it (the chain resumed inside the run, which the window cut).
+		if pos >= end-at && (stop == pemStopOpen || stop == pemStopWindow) ||
+			stop == pemStopJunk && pos < end-at && window[pos] == '\\' && bsRunEnd(window, pos) >= end-at {
 			return true
 		}
 	}
