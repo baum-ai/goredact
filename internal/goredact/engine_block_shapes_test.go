@@ -519,6 +519,8 @@ func TestEngineKeyShapesReview2(t *testing.T) {
 		{"PGP key, line numbers \" 99→\" then \"100→\"", numbered("%3d→", pgp, 99) + "\n", pgpBody},
 		{"PuTTY key, line numbers \" 9→\" then \"10→\"", numbered("%2d→", ppk, 1) + "\n", priv},
 		{"PHP concatenation", "$key = \"" + strings.ReplaceAll(pem, "\n", "\\n\" .\n    \"") + "\\n\";\n", body},
+		{"Lua concatenation, trailing ..", "local key = \"" + strings.ReplaceAll(pem, "\n", "\\n\"..\n  \"") + "\\n\"\n", body},
+		{"Lua concatenation, leading ..", "local key = \"" + strings.ReplaceAll(pem, "\n", "\\n\"\n  .. \"") + "\\n\"\n", body},
 		{"Visual Basic concatenation", "Dim key = \"" + strings.ReplaceAll(pem, "\n", "\" & vbLf & _\n    \"") + "\"\n", body},
 	} {
 		t.Run(tc.name, func(t *testing.T) { assertBlockMasked(t, tc.input, tc.secret) })

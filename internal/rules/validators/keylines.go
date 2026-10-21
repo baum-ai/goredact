@@ -328,7 +328,8 @@ func keyFrameByte(w []byte, p int) (b, next int, need bool) {
 // ending at or before limit: a sequence of
 //
 //   - indentation: spaces, tabs;
-//   - leading operators of a continued expression: '+', '&', '.';
+//   - leading operators of a continued expression: '+', '&', '.' and
+//     ".." (before a space, a quote or the line break);
 //   - anchors: quote markers ('>'), comment markers ('#', "//", ';', '*',
 //     '%', '|'), opening quotes (", '), and line numbers — digits, optional
 //     spaces, then a tab, an arrow, ':', '|' or a bar ("    12→", "12\t",
@@ -361,11 +362,18 @@ func keyFrame(w []byte, p, limit int) (n, markEnd int, need, spaced bool) {
 		switch {
 		case b == ' ' || b == '\t' || b == '+' || b == '&':
 		case b == '.':
-			// A PHP concatenation operator, before a space, a quote or the
-			// line break; not the dots of a "..." placeholder line.
-			b2, _, need := keyFrameByte(w, next)
+			// A concatenation operator, PHP's '.' or Lua's "..", before a
+			// space, a quote or the line break; not the dots of a "..."
+			// placeholder line.
+			b2, n2, need := keyFrameByte(w, next)
 			if need {
 				return p - start, markEnd, short, spaced
+			}
+			if b2 == '.' {
+				if b2, _, need = keyFrameByte(w, n2); need {
+					return p - start, markEnd, short, spaced
+				}
+				next = n2
 			}
 			if b2 != ' ' && b2 != '"' && b2 != '\'' && b2 != '\n' && b2 != '\r' {
 				return p - start, markEnd, false, spaced
@@ -612,8 +620,8 @@ func keyHunkHeader(w []byte, p int, final bool) (end int, ok, need bool) {
 // is where it starts and end one past it. When there is none, at is -1
 // and cut is where a break could still start (a backslash run reaching
 // the end of the window, or a cut \u escape), else len(w). A backslash
-// run that fills the window from p may be split anywhere, so cut is then
-// len(w).
+// run that fills the window from p may be split anywhere that leaves a
+// backslash before the escaped byte, so cut is then len(w)-1.
 func keyNextBreak(w []byte, p int) (at, end, cut int) {
 	start := p
 	for p < len(w) {
@@ -627,7 +635,9 @@ func keyNextBreak(w []byte, p int) (at, end, cut int) {
 				return p, e, 0
 			case escNeed:
 				if p == start && bsRunEnd(w, p) == len(w) {
-					return -1, 0, len(w)
+					// Split the run, leaving one backslash for the next
+					// window to read the escape it opens.
+					return -1, 0, len(w) - 1
 				}
 				return -1, 0, p
 			}
@@ -664,8 +674,8 @@ func keyTriggerPrefix(w []byte, trigStart int) (marker byte, framed bool) {
 // keyCutResume returns where a scan may resume when the window ends before
 // the line end at p is decided because of a backslash run (an escaped line
 // break may be any number of backslashes then 'n'): at the start of a
-// trailing backslash run that begins after p, or at the end of the window
-// when the run fills it from p. It returns 0 when the window ends without
+// trailing backslash run that begins after p, or at the window's last
+// byte when the run fills it from p. It returns 0 when the window ends without
 // a trailing run.
 func keyCutResume(w []byte, p int) int {
 	r := len(w)
@@ -678,5 +688,7 @@ func keyCutResume(w []byte, p int) int {
 	case r > p:
 		return r
 	}
-	return len(w)
+	// The run fills the window from p: split it, leaving one backslash for
+	// the next window to read the escape it opens.
+	return len(w) - 1
 }

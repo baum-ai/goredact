@@ -18,17 +18,17 @@ versioning.
   transcripts, raw or as `\u2192`; `  12 | ` and `12|`; `12:` from
   `grep -n` and `rg -n`; `12│` from bat; `12<tab>` from `cat -n`), or
   concatenated from one string literal per line (`"...\n" +`,
-  `+ "...\n"`, `'...' +`, `"...\n" .`, `" & vbLf & _`, in Go, Java,
-  JavaScript, Python, PHP and Visual Basic sources). At the start of every
-  line, after a raw or an escaped line feed, the scans skip a line frame
-  of up to 64 bytes (65 when it starts with a space) — quote and comment
-  markers (a `//` followed by base64 is key content), a line number
-  followed by optional spaces and a tab, an arrow, '|', ':' or a
-  box-drawing bar, an indentation, an opening quote, a leading `+`, `&`
-  or `.` (before a space, a quote or the line break), each raw or escaped
-  (`\u003e` as Go's encoding/json writes '>', `\/\/`) — and take a quote
-  closing a string literal's line with its line break. A line
-  number may change width without padding (` 9→` then `10→`). A diff
+  `+ "...\n"`, `'...' +`, `"...\n" .`, `"...\n"..`, `" & vbLf & _`, in
+  Go, Java, JavaScript, Python, PHP, Lua and Visual Basic sources). At
+  the start of every line, after a raw or an escaped line feed, the scans
+  skip a line frame of up to 64 bytes (65 when it starts with a space) —
+  quote and comment markers (a `//` followed by base64 is key content), a
+  line number followed by optional spaces and a tab, an arrow, '|', ':'
+  or a box-drawing bar, an indentation, an opening quote, a leading `+`,
+  `&`, `.` or `..` (before a space, a quote or the line break), each raw
+  or escaped (`\u003e` as Go's encoding/json writes '>', `\/\/`) — and
+  take a quote closing a string literal's line with its line break. A
+  line number may change width without padding (` 9→` then `10→`). A diff
   marker may precede the frame (`+> `, `+\t"` on a patch of Go source) or
   follow it (`    18→-`, `> +`, `>-` on a numbered or quoted patch), so both
   rules' lookbehind grows from 2 to 67 bytes to read the trigger line from

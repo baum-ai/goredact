@@ -376,3 +376,23 @@ func TestKeyLineMarker(t *testing.T) {
 		}
 	}
 }
+
+// TestPPKChainStepsBackslashRunLine: a stepped PuTTY line that ends in an
+// escaped line feed whose backslash run fills a whole window is split so
+// the next window still reads the escape, and the context line after it is
+// counted as one scan of the whole input counts it.
+func TestPPKChainStepsBackslashRunLine(t *testing.T) {
+	for _, n := range []int{1170, 1200, 2500} {
+		text := []byte(ppkTrig + "2:\n Private-Lines:1\n+" + pemB64LineA[:16] + "\n+0" + strings.Repeat(`\`, n) + "n 0")
+		wantS, wantE, ok := wholeSpan(ppkBlock, text, 0)
+		if !ok || wantE != len(text) {
+			t.Fatalf("run %d: whole [%d,%d) ok=%v, want the last context line counted", n, wantS, wantE, ok)
+		}
+		for la := 1168; la < 1300; la++ {
+			start, end, ok, _, _ := chainSpan(ppkBlock, text, 0, la)
+			if !ok || start != wantS || end < wantE {
+				t.Fatalf("run %d, lookahead %d: chained [%d,%d) ok=%v, whole [%d,%d)", n, la, start, end, ok, wantS, wantE)
+			}
+		}
+	}
+}
