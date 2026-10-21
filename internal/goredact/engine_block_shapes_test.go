@@ -410,6 +410,13 @@ func TestEngineKeyShapesGenerated(t *testing.T) {
 	rng := rand.New(rand.NewSource(99))
 	for i := 0; i < 3000; i++ {
 		body := blockTestLines(rng.Int63(), 3+rng.Intn(10))
+		for j := range body {
+			// Line starts that read like frames or markers: a comment
+			// marker, a continued expression, a line number.
+			if start := []string{"//", "+", "+//", "12", "1234567", "/+/", "//12"}[rng.Intn(7)]; rng.Intn(4) == 0 {
+				body[j] = start + body[j][len(start):]
+			}
+		}
 		label := []string{"RSA PRIVATE KEY", "PGP PRIVATE KEY BLOCK", "PRIVATE KEY", "OPENSSH PRIVATE KEY"}[rng.Intn(4)]
 		armor := armors[rng.Intn(len(armors))]
 		pgp := strings.HasPrefix(label, "PGP")
@@ -516,4 +523,113 @@ func TestEngineKeyShapesReview2(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) { assertBlockMasked(t, tc.input, tc.secret) })
 	}
+}
+
+// TestEngineKeyLinesThatLookLikeFrames: key lines whose content starts
+// like a frame or a marker ("//", "+//", digits) stay key lines in every
+// shape, and patches quoted with no space (">", ">>") keep their markers.
+// A PuTTY private line starting with "//" read as a comment marker ended
+// the section in diff mode, so the lines after it leaked, even where
+// v0.3.0 masked them (a patch that changes only the comment, a key
+// indented by one space).
+func TestEngineKeyLinesThatLookLikeFrames(t *testing.T) {
+	pub := blockTestLines(60, 2)
+	priv := blockTestLines(61, 14)
+	slash := append([]string{}, priv...)
+	slash[3] = "//" + slash[3][2:]
+	plusSlash := append([]string{}, priv...)
+	plusSlash[3] = "+//" + plusSlash[3][3:]
+	ppkOf := func(priv []string) string {
+		return "PuTTY-User-Key-File-3: ssh-rsa\nEncryption: none\nComment: k\nPublic-Lines: 2\n" + strings.Join(pub, "\n") +
+			fmt.Sprintf("\nPrivate-Lines: %d\n", len(priv)) + strings.Join(priv, "\n") + "\nPrivate-MAC: 00"
+	}
+	commentOnly := func(priv []string) string {
+		var b strings.Builder
+		b.WriteString("@@ -1,22 +1,22 @@\n PuTTY-User-Key-File-3: ssh-rsa\n Encryption: none\n-Comment: old\n+Comment: new\n Public-Lines: 2\n")
+		for _, l := range pub {
+			b.WriteString(" " + l + "\n")
+		}
+		fmt.Fprintf(&b, " Private-Lines: %d\n", len(priv))
+		for _, l := range priv {
+			b.WriteString(" " + l + "\n")
+		}
+		b.WriteString("-Private-MAC: 00\n+Private-MAC: 11\n")
+		return b.String()
+	}
+	oldB, newB := blockTestLines(62, 14), blockTestLines(63, 14)
+	var rot strings.Builder
+	rot.WriteString("@@ -1,22 +1,22 @@\n PuTTY-User-Key-File-3: ssh-rsa\n Encryption: none\n Comment: k\n Public-Lines: 2\n")
+	for _, l := range pub {
+		rot.WriteString(" " + l + "\n")
+	}
+	fmt.Fprintf(&rot, " Private-Lines: %d\n", len(oldB))
+	for _, l := range oldB {
+		rot.WriteString("-" + l + "\n")
+	}
+	rot.WriteString("-Private-MAC: 00\n")
+	for _, l := range newB {
+		rot.WriteString("+" + l + "\n")
+	}
+	rot.WriteString("+Private-MAC: 11\n")
+	both := append(append([]string{}, oldB...), newB...)
+	numbered := func(s string) string {
+		return shapePrefix(s, func(i int) string { return fmt.Sprintf("%6d→", i+1) })
+	}
+
+	dig := blockTestLines(64, 12)
+	for i, start := range []string{"", "12", "1234567", "+12", "/+/", "//12", "//", "+//"} {
+		dig[i] = start + dig[i][len(start):]
+	}
+	dpem := "-----BEGIN PRIVATE KEY-----\n" + strings.Join(dig, "\n") + "\n-----END PRIVATE KEY-----"
+	dppk := ppkOf(dig)
+
+	cases := []struct {
+		name   string
+		input  string
+		secret []string
+	}{
+		{"comment-only patch, private line starts //", commentOnly(slash), slash},
+		{"comment-only patch, private line starts +//", commentOnly(plusSlash), plusSlash},
+		{"comment-only patch numbered, line starts //", numbered(commentOnly(slash)), slash},
+		{"YAML block, line starts //", "k: |\n" + shapeConst("  ", ppkOf(slash)) + "\n", slash},
+		{"YAML block in PHP JSON, line starts //", `{"k":"` + phpJSON("k: |\n"+shapeConst("  ", ppkOf(slash))) + `"}` + "\n", encodeLines(slash, phpJSON)},
+		{"PuTTY key indented by one space, line starts //", shapeConst(" ", ppkOf(slash)) + "\n", slash},
+		{"numbered PuTTY key, line starts //", numbered(ppkOf(slash)) + "\n", slash},
+		{"added PuTTY key, line starts //", "@@ -0,0 +1,22 @@\n" + blockTestDiff("+", ppkOf(slash)), slash},
+		{"quoted PuTTY key, line starts //", shapeConst("> ", ppkOf(slash)) + "\n", slash},
+		{"rotation patch quoted with '>'", shapeConst(">", rot.String()) + "\n", both},
+		{"rotation patch quoted with '>>'", shapeConst(">>", rot.String()) + "\n", both},
+		{"rotation patch quoted with '> > '", shapeConst("> > ", rot.String()) + "\n", both},
+		{"comment-only patch quoted with '>'", shapeConst(">", commentOnly(priv)) + "\n", priv},
+	}
+	for _, f := range []string{"", "  ", "> ", "    7→", "+", " ", "+> ", "# "} {
+		cases = append(cases,
+			struct {
+				name   string
+				input  string
+				secret []string
+			}{fmt.Sprintf("PEM lines starting with digits, + or // behind %q", f), shapeConst(f, dpem) + "\n", dig},
+			struct {
+				name   string
+				input  string
+				secret []string
+			}{fmt.Sprintf("PuTTY lines starting with digits, + or // behind %q", f), shapeConst(f, dppk) + "\n", dig})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) { assertBlockMasked(t, tc.input, tc.secret) })
+	}
+}
+
+// TestEngineFrameBounds: a "..." placeholder line does not carry a
+// truncated key on, and a frame of 64 spaces before a context marker's
+// quote still reads (the space-led budget).
+func TestEngineFrameBounds(t *testing.T) {
+	line := blockTestLines(65, 1)[0]
+	in := "# Example:\n#   -----BEGIN RSA PRIVATE KEY-----\n#   " + line + "\n#   ...\n# then run\nset -eu\nopenssl genrsa -out key.pem\n"
+	assertSpan(t, in, strings.Index(in, "-----BEGIN"), strings.Index(in, line)+len(line))
+
+	body := blockTestLines(66, 30)
+	pem := "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----"
+	pad := strings.Repeat(" ", 64)
+	assertBlockMasked(t, "key := \"\" +\n"+shapeLines(pem, func(_ int, l string) string { return pad + "\"" + l + `\n" +` })+"\n\"\"\n", body)
 }

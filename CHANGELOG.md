@@ -21,14 +21,16 @@ versioning.
   `+ "...\n"`, `'...' +`, `"...\n" .`, `" & vbLf & _`, in Go, Java,
   JavaScript, Python, PHP and Visual Basic sources). At the start of every
   line, after a raw or an escaped line feed, the scans skip a line frame
-  of up to 64 bytes — quote and comment markers, a line number followed
-  by optional spaces and a tab, an arrow, '|', ':' or a box-drawing bar,
-  an indentation, an opening quote, a leading `+`, `&` or `.`, each raw or
-  escaped (`\u003e` as Go's encoding/json writes '>', `\/\/`) — and take a
-  quote closing a string literal's line with its line break. A line
+  of up to 64 bytes (65 when it starts with a space) — quote and comment
+  markers (a `//` followed by base64 is key content), a line number
+  followed by optional spaces and a tab, an arrow, '|', ':' or a
+  box-drawing bar, an indentation, an opening quote, a leading `+`, `&`
+  or `.` (before a space, a quote or the line break), each raw or escaped
+  (`\u003e` as Go's encoding/json writes '>', `\/\/`) — and take a quote
+  closing a string literal's line with its line break. A line
   number may change width without padding (` 9→` then `10→`). A diff
   marker may precede the frame (`+> `, `+\t"` on a patch of Go source) or
-  follow it (`    18→-`, `> +` on a numbered or quoted patch), so both
+  follow it (`    18→-`, `> +`, `>-` on a numbered or quoted patch), so both
   rules' lookbehind grows from 2 to 67 bytes to read the trigger line from
   its start; a removed line's `-` before a frame is read too when the
   trigger line holds more than a marker and a frame
@@ -64,9 +66,12 @@ versioning.
   split by hunk headers; new synthetic fixtures for quoted, escaped,
   concatenated and indented keys. `BenchmarkRedactLongKeyBlocks` runs
   about 4% slower (about 600 MB/s); the quiet and noisy benchmarks and
-  `make bench-ci` are unchanged. The worst case, a flood of BEGIN lines
-  each starting a scan of its 16 KiB window, drops from about 7.0 to about
-  4.9 MB/s and stays linear.
+  `make bench-ci` are unchanged. In the worst cases, floods of BEGIN lines
+  each starting a scan of its 16 KiB window, a bare flood drops from about
+  7.0 to about 4.9 MB/s, and a flood of short keys behind line numbers and
+  diff markers (`    12→+> -----BEGIN …`, which v0.3.0 did not scan) runs
+  at about 2.3 MB/s. Both stay linear: at most one 16 KiB window of
+  scanning per trigger, as in v0.3.0.
 
 ## v0.3.0 — 2026-10-20
 

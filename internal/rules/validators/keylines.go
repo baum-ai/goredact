@@ -323,7 +323,8 @@ func keyFrameByte(w []byte, p int) (b, next int, need bool) {
 	}
 }
 
-// keyFrame parses the line frame at p, at most keyFrameMax bytes and
+// keyFrame parses the line frame at p, at most keyFrameMax bytes (past a
+// leading space) and
 // ending at or before limit: a sequence of
 //
 //   - indentation: spaces, tabs;
@@ -337,35 +338,59 @@ func keyFrameByte(w []byte, p int) (b, next int, need bool) {
 // cannot hide an END marker. markEnd is where the last anchor ends, past
 // the one space that conventionally follows a quote or comment marker, or
 // -1 without an anchor: what follows it up to the content may be a diff
-// marker (keyLineMarker). need reports that the window ends before the
-// frame is decided; it only does when the window ends within keyFrameMax
+// marker (keyLineMarker); spaced reports that markEnd includes that
+// space. need reports that the window ends before the frame is decided; it only does when the window ends within keyFrameMax
 // bytes, since a token running past that is no frame.
-func keyFrame(w []byte, p, limit int) (n, markEnd int, need bool) {
+func keyFrame(w []byte, p, limit int) (n, markEnd int, need, spaced bool) {
 	start := p
 	markEnd = -1
-	limit = min(limit, len(w), start+keyFrameMax)
-	short := len(w) < start+keyFrameMax
+	budget := keyFrameMax
+	if p < len(w) && w[p] == ' ' {
+		// A leading space, a context marker or an indentation, does not
+		// count against the frame's keyFrameMax bytes.
+		budget++
+	}
+	limit = min(limit, len(w), start+budget)
+	short := len(w) < start+budget
 	for p < limit {
 		b, next, need := keyFrameByte(w, p)
 		if need {
-			return p - start, markEnd, short
+			return p - start, markEnd, short, spaced
 		}
-		anchor, spaced := false, false
+		anchor, space := false, false
 		switch {
-		case b == ' ' || b == '\t' || b == '+' || b == '&' || b == '.':
+		case b == ' ' || b == '\t' || b == '+' || b == '&':
+		case b == '.':
+			// A PHP concatenation operator, before a space, a quote or the
+			// line break; not the dots of a "..." placeholder line.
+			b2, _, need := keyFrameByte(w, next)
+			if need {
+				return p - start, markEnd, short, spaced
+			}
+			if b2 != ' ' && b2 != '"' && b2 != '\'' && b2 != '\n' && b2 != '\r' {
+				return p - start, markEnd, false, spaced
+			}
 		case b == '>' || b == '#' || b == ';' || b == '*' || b == '%' || b == '|':
-			anchor, spaced = true, true
+			anchor, space = true, true
 		case b == '"' || b == '\'':
 			anchor = true
 		case b == '/':
 			b2, n2, need := keyFrameByte(w, next)
 			if need {
-				return p - start, markEnd, short
+				return p - start, markEnd, short, spaced
 			}
 			if b2 != '/' {
-				return p - start, markEnd, false
+				return p - start, markEnd, false, spaced
 			}
-			next, anchor, spaced = n2, true, true
+			// "//" directly followed by base64 is key content (a body line
+			// may start with "//"), not a comment marker.
+			if n2 >= len(w) {
+				return p - start, markEnd, short, spaced
+			}
+			if pemBase64[w[n2]] {
+				return p - start, markEnd, false, spaced
+			}
+			next, anchor, space = n2, true, true
 		case b >= '0' && b <= '9' && next == p+1:
 			j := p
 			for j < len(w) && isDigit(w[j]) && j-p < keyNumberMax {
@@ -376,35 +401,35 @@ func keyFrame(w []byte, p, limit int) (n, markEnd int, need bool) {
 			}
 			sep, n2, need := keyFrameByte(w, j)
 			if need {
-				return p - start, markEnd, short
+				return p - start, markEnd, short, spaced
 			}
 			switch sep {
 			case '\t', keyArrow, keyBar, ':', '|':
 				next, anchor = n2, true
 			default:
-				return p - start, markEnd, false
+				return p - start, markEnd, false, spaced
 			}
 		default:
-			return p - start, markEnd, false
+			return p - start, markEnd, false, spaced
 		}
 		if next > limit {
 			break
 		}
 		p = next
 		if anchor {
-			markEnd = p
-			if spaced && p < limit && w[p] == ' ' {
+			markEnd, spaced = p, false
+			if space && p < limit && w[p] == ' ' {
 				p++
-				markEnd = p
+				markEnd, spaced = p, true
 			}
 		}
 	}
-	return p - start, markEnd, p == len(w) && short
+	return p - start, markEnd, p == len(w) && short, spaced
 }
 
 // keyFrameLen returns the length of the line frame at p (keyFrame).
 func keyFrameLen(w []byte, p, limit int) (n int, need bool) {
-	n, _, need = keyFrame(w, p, limit)
+	n, _, need, _ = keyFrame(w, p, limit)
 	return n, need
 }
 
@@ -414,13 +439,16 @@ func keyFrameLen(w []byte, p, limit int) (n int, need bool) {
 // anchors, as on the lines of a numbered or quoted patch ("    18→-",
 // "> +"). marker is 0 for a line with neither; content is where the line's
 // content starts. A '-' after the anchors is taken as a marker: a caller
-// that may find an END marker there checks for it.
-func keyLineMarker(w []byte, p, limit int) (marker byte, content int, need bool) {
+// that may find an END marker there checks for it. spaced reports that
+// the anchors ended with a quote or comment marker's conventional space:
+// on a line with no marker, that space may be a context marker of a patch
+// quoted with no space (">" + " " + content).
+func keyLineMarker(w []byte, p, limit int) (marker byte, content int, need, spaced bool) {
 	if p < limit && (w[p] == '+' || w[p] == '-') {
 		n, need := keyFrameLen(w, p+1, limit)
-		return w[p], p + 1 + n, need
+		return w[p], p + 1 + n, need, false
 	}
-	n, markEnd, need := keyFrame(w, p, limit)
+	n, markEnd, need, spaced := keyFrame(w, p, limit)
 	c := p + n
 	from := p
 	if markEnd >= 0 {
@@ -428,11 +456,11 @@ func keyLineMarker(w []byte, p, limit int) (marker byte, content int, need bool)
 	}
 	switch {
 	case from < c && (w[from] == ' ' || w[from] == '+'):
-		return w[from], c, need
+		return w[from], c, need, false
 	case from == c && markEnd >= 0 && c < limit && w[c] == '-':
-		return '-', c + 1, need
+		return '-', c + 1, need, false
 	}
-	return 0, c, need
+	return 0, c, need, spaced
 }
 
 // keyPlainLine reports whether the line starting at p (a body line outside
@@ -498,7 +526,7 @@ func keyLinePrefix(w []byte, ls, at int) (marker byte, ok bool) {
 	if ls < 0 || ls > at || at > len(w) {
 		return 0, false
 	}
-	marker, content, _ := keyLineMarker(w, ls, at)
+	marker, content, _, _ := keyLineMarker(w, ls, at)
 	if content != at {
 		return 0, false
 	}

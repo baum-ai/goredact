@@ -534,7 +534,7 @@ func (s *pemScanner) lineStart(window []byte, i int, final bool) (next int, cut 
 		if _, isEnd := pemEndMarker(window, i); !isEnd {
 			switch {
 			case s.diff:
-				m, c, need := keyLineMarker(window, i, len(window))
+				m, c, need, _ := keyLineMarker(window, i, len(window))
 				if need && !final {
 					return start, true
 				}
@@ -1392,11 +1392,16 @@ type ppkLine struct {
 func (s *ppkScanner) head(window []byte, p int, final bool) (l ppkLine, ok, cut bool) {
 	l = ppkLine{sides: [2]bool{false, true}, hunk: -1}
 	if s.diff {
-		m, c, need := keyLineMarker(window, p, len(window))
+		m, c, need, spaced := keyLineMarker(window, p, len(window))
 		if need && !final {
 			return l, false, true
 		}
 		l.content = c
+		if m == 0 && spaced {
+			// A patch quoted with no space (">" + marker): the quote
+			// marker's conventional space is the context marker.
+			m = ' '
+		}
 		if m != 0 {
 			l.sides, _ = ppkSides(m)
 			l.marked = true
@@ -1444,7 +1449,7 @@ func (s *ppkScanner) overflowBody(window []byte, start, body int, final bool) (n
 		}
 		var c int
 		if s.diff {
-			_, c, need = keyLineMarker(window, next, len(window))
+			_, c, need, _ = keyLineMarker(window, next, len(window))
 		} else {
 			var f int
 			f, need = keyFrameLen(window, next, len(window))
@@ -1519,6 +1524,22 @@ func ppkFindHeader(window []byte, from int, allow [2]bool, marked, loose bool) (
 	return 0, 0, false
 }
 
+// ppkQuotedPatch reports a header at at, behind a quote marker and its
+// conventional space (">" + " " + "Private-Lines:"), whose next line, at
+// next, puts a diff marker right after the quote marker (">-", ">+"): a
+// patch quoted with no space, in which that space is a context marker.
+func ppkQuotedPatch(window []byte, at, next int) bool {
+	ls, ok := keyLineStart(window, at, false)
+	if !ok {
+		return false
+	}
+	if m, c, _, spaced := keyLineMarker(window, ls, at); m != 0 || !spaced || c != at {
+		return false
+	}
+	m, _, _, spaced := keyLineMarker(window, next, len(window))
+	return (m == '+' || m == '-') && !spaced
+}
+
 // PuTTYPrivateKey confirms the private section of a PuTTY PPK file within
 // window, treating the end of window as the end of input. It is
 // PuTTYPrivateKeyBegin with final set.
@@ -1571,6 +1592,9 @@ func PuTTYPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (st
 	n, p, ok, _ := ppkCount(window, secStart+len(ppkPrivateLines))
 	if !ok {
 		return 0, 0, 0, false, false
+	}
+	if marker == 0 && ppkQuotedPatch(window, secStart, p) {
+		marker = ' ' // a context line of a patch quoted with no space
 	}
 
 	s := ppkScanner{lastEnd: -1, reach: trigEnd + ppkHeaderReach}

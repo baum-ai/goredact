@@ -99,7 +99,8 @@ func TestKeyFrameLen(t *testing.T) {
 		{"/MIIE", 0, false},
 		{"> 12", 2, true},
 		{"  ", 2, true},
-		{strings.Repeat(" ", 100) + "M", keyFrameMax, false},
+		{strings.Repeat(" ", 100) + "M", keyFrameMax + 1, false}, // a leading space is outside the budget
+		{strings.Repeat("\t", 100) + "M", keyFrameMax, false},
 		{"  12 | MIIE", 7, false},
 		{"12|MIIE", 3, false},
 		{"12:MIIE", 3, false},
@@ -369,7 +370,7 @@ func TestKeyLineMarker(t *testing.T) {
 		{"# MIIE", 0, 2},
 		{"#  MIIE", ' ', 3},
 	} {
-		m, c, _ := keyLineMarker([]byte(tc.in), 0, len(tc.in))
+		m, c, _, _ := keyLineMarker([]byte(tc.in), 0, len(tc.in))
 		if m != tc.marker || c != tc.content {
 			t.Errorf("keyLineMarker(%q) = %q, %d; want %q, %d", tc.in, m, c, tc.marker, tc.content)
 		}
