@@ -50,12 +50,15 @@ transcripts, patches and sources (`internal/rules/validators/keylines.go`):
 in string literals, with the escapes of JSON encoders (`\n`, `\"`, PHP's
 `\/`, .NET's `\u002B`, any backslash run for JSON inside JSON); behind a
 line frame of up to 64 bytes, read at the start of every line (an email or
-Markdown quote, a comment marker, a line number with a tab or an arrow, an
-indentation, an opening quote); with a quote closing a concatenated string
-line (`"...\n" +`); and across a unified diff hunk header, which is masked
-with the key (git may give it a key line as its section heading). Their
-lookbehind (67 bytes) holds the trigger line's frame, its diff marker and
-the line break before them, so a marked line is recognised behind a frame
+Markdown quote, a comment marker, a line number followed by a tab, an
+arrow, '|', ':' or a box-drawing bar, an indentation, an opening quote,
+each raw or escaped); with a quote closing a concatenated string line
+(`"...\n" +`, `" .`, `" & _`); and across a unified diff hunk header, which
+is masked with the key (git may give it a key line as its section
+heading). A line's diff marker comes before its frame (`+> `) or after the
+frame's line number or quote marker (`    18→-`, `> +`). Their lookbehind
+(67 bytes) holds the trigger line's frame, its diff marker and the line
+break before them, so a marked line is recognised behind a frame
 (`+> -----BEGIN`). A PuTTY section whose `Private-Lines` count is too low
 takes up to 100 further base64 lines up to its `Private-MAC` line.
 

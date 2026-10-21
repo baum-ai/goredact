@@ -12,6 +12,7 @@ package goredact
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -371,4 +372,148 @@ func TestEngineKeyShapesReview(t *testing.T) {
 		patch := "@@ -1,9 +1,9 @@\n" + blockTestDiff(" ", under[:cut-1]) + "@@ -20,4 +20,4 @@ " + priv[3] + "\n" + blockTestDiff(" ", under[cut:])
 		assertBlockMasked(t, patch, priv)
 	})
+}
+
+// TestEngineArmorBehindIndentOrBullet: armor header lines need not share
+// the BEGIN line's first byte. v0.3.0 masked these; the first version of
+// the line frames read the BEGIN line's indentation or list bullet as a
+// diff marker the header lines then had to repeat, and the key leaked.
+func TestEngineArmorBehindIndentOrBullet(t *testing.T) {
+	body := blockTestLines(56, 20)
+	b := strings.Join(body, "\n")
+	for name, in := range map[string]string{
+		"list bullet, indented armor": "Keys:\n\n- -----BEGIN PGP PRIVATE KEY BLOCK-----\n  Version: OpenPGP.js v4.10.10\n  Comment: https://openpgpjs.org\n\n" +
+			shapeConst("  ", b) + "\n  =Tx4q\n  -----END PGP PRIVATE KEY BLOCK-----\n",
+		"indented BEGIN, armor not":     "  -----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v1.4.11 (GNU/Linux)\n\n" + b + "\n-----END PGP PRIVATE KEY BLOCK-----\n",
+		"indented BEGIN, tab armor":     "  -----BEGIN PGP PRIVATE KEY BLOCK-----\n\tVersion: GnuPG v1.4.11 (GNU/Linux)\n\n" + b + "\n-----END PGP PRIVATE KEY BLOCK-----\n",
+		"indented BEGIN, + armor":       "    -----BEGIN PGP PRIVATE KEY BLOCK-----\n+Version: GnuPG v1.4.11 (GNU/Linux)\n\n" + b + "\n-----END PGP PRIVATE KEY BLOCK-----\n",
+		"+ bullet, indented armor":      "+ -----BEGIN PGP PRIVATE KEY BLOCK-----\n  Version: BCPG v1.58\n\n" + shapeConst("  ", b) + "\n  -----END PGP PRIVATE KEY BLOCK-----\n",
+		"padded number, unpadded armor": "     1→-----BEGIN PGP PRIVATE KEY BLOCK-----\n2→Version: GnuPG v1.4.11 (GNU/Linux)\n3→\n" + b + "\n",
+		"bullet in a patch":             "@@ -0,0 +1,25 @@\n" + blockTestDiff("+", "- -----BEGIN PGP PRIVATE KEY BLOCK-----\n- Comment: \"Alice\" <alice@example.com>\n\n"+shapeConst("- ", b)+"\n- -----END PGP PRIVATE KEY BLOCK-----"),
+	} {
+		t.Run(name, func(t *testing.T) { assertBlockMasked(t, in, body) })
+	}
+}
+
+// TestEngineKeyShapesGenerated mixes the shapes at random — the BEGIN
+// line's prefix, the header lines' and the body lines' (the same or not),
+// RFC 4880 or RFC 1421 headers, CRLF line ends, JSON escaping and patch
+// markers — and wants no key line to survive. (An adversarial review ran
+// the same generator over 30,000 cases against v0.3.0: v0.3.0 leaked in
+// 14,346 of them, this version in none.)
+func TestEngineKeyShapesGenerated(t *testing.T) {
+	prefixes := []string{"", "", "", " ", "  ", "    ", "\t", "> ", "> > ", "# ", "// ", " * ", "- ", "+ ", "+", "-",
+		"     12→", "12\t", "\"", "\t\"", "  + \"", "; ", "| ", "%% ", "  12 | ", "12:", "    7│"}
+	armors := []string{"", "", "Version: GnuPG v1.4.11 (GNU/Linux)\n", "Version: OpenPGP.js v4.10.10\nComment: https://openpgpjs.org\n",
+		"Comment: \"Alice\" <alice@example.com>\n", "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,A1B2C3D4E5F60718293A4B5C6D7E8F90\n"}
+	e := mustEngine(t, Config{MaskStrategy: MaskLengthPreserving})
+	rng := rand.New(rand.NewSource(99))
+	for i := 0; i < 3000; i++ {
+		body := blockTestLines(rng.Int63(), 3+rng.Intn(10))
+		label := []string{"RSA PRIVATE KEY", "PGP PRIVATE KEY BLOCK", "PRIVATE KEY", "OPENSSH PRIVATE KEY"}[rng.Intn(4)]
+		armor := armors[rng.Intn(len(armors))]
+		pgp := strings.HasPrefix(label, "PGP")
+		if !pgp && strings.HasPrefix(armor, "Version") || pgp && strings.HasPrefix(armor, "Proc") {
+			armor = ""
+		}
+		blank := ""
+		if armor != "" && pgp {
+			blank = "\n"
+		}
+		key := "-----BEGIN " + label + "-----\n" + armor + blank + strings.Join(body, "\n") + "\n-----END " + label + "-----"
+		pBegin := prefixes[rng.Intn(len(prefixes))]
+		pRest := pBegin
+		if rng.Intn(3) == 0 {
+			pRest = prefixes[rng.Intn(len(prefixes))]
+		}
+		pArmor := pRest
+		if rng.Intn(4) == 0 {
+			pArmor = prefixes[rng.Intn(len(prefixes))]
+		}
+		nArmor := strings.Count(armor, "\n")
+		key = shapeLines(key, func(i int, l string) string {
+			switch {
+			case i == 0:
+				return pBegin + l
+			case i <= nArmor:
+				return pArmor + l
+			}
+			return pRest + l
+		})
+		nl := "\n"
+		if rng.Intn(5) == 0 {
+			nl = "\r\n"
+		}
+		in := "lead text\n" + strings.ReplaceAll(key, "\n", nl) + nl + "tail text.\n"
+		desc := fmt.Sprintf("case %d: label %q armor %q prefixes %q %q %q", i, label, armor, pBegin, pArmor, pRest)
+		switch rng.Intn(6) {
+		case 0:
+			in = `{"c":"` + stdJSON(in) + `"}` + "\n"
+			desc += ", JSON"
+		case 1:
+			in = "@@ -1,40 +1,40 @@\n" + blockTestDiff([]string{"+", "-", " "}[rng.Intn(3)], in)
+			desc += ", patch"
+		}
+		out, _ := redactAll(t, e, strings.NewReader(in))
+		for _, l := range body {
+			if strings.Contains(out, l[20:44]) {
+				t.Fatalf("%s: a key line survives", desc)
+			}
+		}
+	}
+}
+
+// TestEngineKeyShapesReview2 covers a second review's findings: hunk
+// headers behind a frame, PuTTY rotation patches behind a frame, more line
+// number formats, escaped frame bytes, line numbers that change width
+// without padding, and PHP and Visual Basic concatenation.
+func TestEngineKeyShapesReview2(t *testing.T) {
+	body := blockTestLines(57, 30)
+	pem := "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----"
+	numbered := func(format, s string, from int) string {
+		return shapePrefix(s, func(i int) string { return fmt.Sprintf(format, i+from) })
+	}
+	cut := strings.Index(pem, body[15])
+	patch := "@@ -1,16 +1,16 @@\n" + blockTestDiff(" ", pem[:cut-1]) + "@@ -40,7 +40,7 @@ " + body[14] + "\n" + blockTestDiff(" ", pem[cut:])
+
+	old := ppkPrivate(t, readTestdata(t, "old_rsa.ppk"))
+	fresh := ppkPrivate(t, readTestdata(t, "new_rsa.ppk"))
+	rotation := strings.TrimSuffix(readTestdata(t, "diff_new_rsa.patch"), "\n")
+	both := append(append([]string{}, old...), fresh...)
+
+	ppk, _, priv := blockTestPPK(58, 14)
+	ppk = strings.TrimSuffix(ppk, "\n")
+	pgp, pgpBody := blockTestPGP(59, 1500)
+	pgp = strings.Replace(pgp, "\n\n", "\nVersion: GnuPG v1.4.11 (GNU/Linux)\n\n", 1)
+
+	for _, tc := range []struct {
+		name   string
+		input  string
+		secret []string
+	}{
+		{"hunk header behind line numbers", numbered("%6d→", patch, 1) + "\n", body},
+		{"hunk header behind a quote", shapeConst("> ", patch) + "\n", body},
+		{"hunk header on an added line", "@@ -0,0 +1,40 @@\n" + blockTestDiff("+", patch), body},
+		{"PuTTY rotation patch behind line numbers", numbered("%6d→", rotation, 1) + "\n", both},
+		{"PuTTY rotation patch behind a quote", shapeConst("> ", rotation) + "\n", both},
+		{"line numbers with a bar", numbered("%4d | ", pem, 1) + "\n", body},
+		{"line numbers with a bar, no spaces", numbered("%d|", pem, 1) + "\n", body},
+		{"line numbers with a colon (grep -n)", numbered("%d:", pem, 1) + "\n", body},
+		{"line numbers with a box-drawing bar (bat)", numbered("%4d │ ", pem, 1) + "\n", body},
+		{"PuTTY key behind line numbers with a bar", numbered("%4d | ", ppk, 1) + "\n", priv},
+		{"quoted key in Go's default JSON (\\u003e)", func() string {
+			b, _ := json.Marshal(shapeConst("> ", pem))
+			return `{"c":` + string(b) + "}\n"
+		}(), body},
+		{"quoted key in .NET JSON (\\u003E)", `{"c":"` + strings.ReplaceAll(dotnetJSON(shapeConst("> ", pem)), ">", `\u003E`) + `"}` + "\n",
+			encodeLines(body, dotnetJSON)},
+		{"commented key in PHP JSON (\\/\\/)", `{"c":"` + phpJSON(shapeConst("// ", pem)) + `"}` + "\n", encodeLines(body, phpJSON)},
+		{"PGP key, line numbers \" 9→\" then \"10→\"", numbered("%2d→", pgp, 9) + "\n", pgpBody},
+		{"PGP key, line numbers \" 99→\" then \"100→\"", numbered("%3d→", pgp, 99) + "\n", pgpBody},
+		{"PuTTY key, line numbers \" 9→\" then \"10→\"", numbered("%2d→", ppk, 1) + "\n", priv},
+		{"PHP concatenation", "$key = \"" + strings.ReplaceAll(pem, "\n", "\\n\" .\n    \"") + "\\n\";\n", body},
+		{"Visual Basic concatenation", "Dim key = \"" + strings.ReplaceAll(pem, "\n", "\" & vbLf & _\n    \"") + "\"\n", body},
+	} {
+		t.Run(tc.name, func(t *testing.T) { assertBlockMasked(t, tc.input, tc.secret) })
+	}
 }

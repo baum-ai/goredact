@@ -13,6 +13,8 @@ package validators
 // over a non-final window then stops before the shape and decides it in
 // the next window, which starts at or before it.
 
+import "strings"
+
 const (
 	// keyFrameMax bounds a line frame, the prefix before a key line's
 	// content (see keyFrameLen).
@@ -24,8 +26,9 @@ const (
 	keyLookbehind = keyFrameMax + 3
 
 	// keyTailMax bounds the bytes between a closing quote and the line
-	// break of a concatenated string line (`" +`, `",`, `");`).
-	keyTailMax = 8
+	// break of a concatenated string line (`" +`, `",`, `");`,
+	// `" & vbCrLf & _`).
+	keyTailMax = 24
 
 	// keyHunkMax bounds a unified diff hunk header line, its section
 	// heading included (git truncates that heading to 80 bytes).
@@ -183,7 +186,9 @@ func keyBreak(w []byte, p int) (end int, ok, need bool) {
 }
 
 // keyQuoteTail reports the end of a string literal's line at p: a closing
-// quote (", ' or an escaped quote), up to keyTailMax bytes of " \t+,;)",
+// quote (", ' or an escaped quote), up to keyTailMax bytes of " \t+,;)"
+// and the concatenation operators of PHP ('.') and Visual Basic ("& _",
+// "& vbLf & _"),
 // and a line break. at is where that line break starts, end one past it.
 func keyQuoteTail(w []byte, p int) (at, end int, ok, need bool) {
 	q := p
@@ -197,7 +202,13 @@ func keyQuoteTail(w []byte, p int) (at, end int, ok, need bool) {
 		return 0, 0, false, false
 	}
 	q++
-	for n := 0; q < len(w) && n < keyTailMax && isTailByte(w[q]); n++ {
+	amp := false // after a Visual Basic '&', a constant such as vbCrLf
+	for n := 0; q < len(w) && n < keyTailMax; n++ {
+		c := w[q]
+		amp = amp || c == '&'
+		if !isTailByte(c) && !(amp && isASCIILetter(c)) {
+			break
+		}
 		q++
 	}
 	end, ok, need = keyBreak(w, q)
@@ -205,7 +216,8 @@ func keyQuoteTail(w []byte, p int) (at, end int, ok, need bool) {
 }
 
 func isTailByte(c byte) bool {
-	return c == ' ' || c == '\t' || c == '+' || c == ',' || c == ';' || c == ')'
+	return c == ' ' || c == '\t' || c == '+' || c == ',' || c == ';' || c == ')' ||
+		c == '.' || c == '&' || c == '_'
 }
 
 // keyLineEnd reports the end of a key line at p: a line break, or the end
@@ -249,103 +261,178 @@ func keyAfterBreak(w []byte, pos int) bool {
 	return false
 }
 
-// keyNumberSep reports the separator after a line number at p — a tab
-// (as `cat -n` writes it, raw or escaped) or the arrow U+2192 that agent
-// transcripts use (raw UTF-8 or escaped →) — and the offset one past
-// it, or 0.
-func keyNumberSep(w []byte, p int) (end int, need bool) {
+// Frame bytes that are not ASCII: the arrow U+2192 agent transcripts put
+// after a line number, and the box-drawing bar U+2502 bat draws.
+const (
+	keyArrow = 0x100 + iota
+	keyBar
+)
+
+// keyFrameByte decodes the byte of a line frame at p: raw, or escaped as a
+// key in a string literal escapes it (`\t`, `\"`, `\'`, `\/`, `\uXXXX`,
+// any backslash run), with the UTF-8 or \u forms of keyArrow and keyBar.
+// It returns -1 for a byte no frame holds; need reports that the window
+// ends inside it.
+func keyFrameByte(w []byte, p int) (b, next int, need bool) {
 	if p >= len(w) {
-		return 0, true
+		return -1, p, true
 	}
-	switch w[p] {
-	case '\t':
-		return p + 1, false
+	switch c := w[p]; c {
 	case 0xe2:
 		if p+3 > len(w) {
-			return 0, true
+			return -1, p, true
 		}
-		if w[p+1] == 0x86 && w[p+2] == 0x92 {
-			return p + 3, false
+		switch {
+		case w[p+1] == 0x86 && w[p+2] == 0x92:
+			return keyArrow, p + 3, false
+		case w[p+1] == 0x94 && w[p+2] == 0x82:
+			return keyBar, p + 3, false
 		}
+		return -1, p, false
 	case '\\':
 		j := bsRunEnd(w, p)
 		if j >= len(w) {
-			return 0, true
+			return -1, p, true
 		}
-		if w[j] == 't' {
-			return j + 1, false
-		}
-		if w[j] == 'u' {
-			if j+5 > len(w) {
-				return 0, true
+		switch w[j] {
+		case 't':
+			return '\t', j + 1, false
+		case '"', '\'', '/':
+			return int(w[j]), j + 1, false
+		case 'u':
+			for k := j + 1; k < j+5; k++ {
+				if k >= len(w) {
+					return -1, p, true
+				}
 			}
-			if v, ok := hex4(w, j+1); ok && v == 0x2192 {
-				return j + 5, false
+			v, ok := hex4(w, j+1)
+			switch {
+			case !ok:
+				return -1, p, false
+			case v == 0x2192:
+				return keyArrow, j + 5, false
+			case v == 0x2502:
+				return keyBar, j + 5, false
+			case v < 0x80 && v != '\n' && v != '\r':
+				return v, j + 5, false
 			}
 		}
+		return -1, p, false
+	default:
+		return int(c), p + 1, false
 	}
-	return 0, false
 }
 
-// keyFrameLen returns the length of the line frame at p, at most
-// keyFrameMax bytes and ending at or before limit: a sequence of
-// indentation (spaces, tabs, escaped tabs), quote markers ('>'), comment
-// markers ('#', "//", ';', '*', '%', '|'), a leading '+' of a continued
-// expression, opening quotes (", ' or an escaped quote) and line numbers
-// followed by a tab or an arrow ("    12→", "12\t"). It never takes a '-',
-// so it cannot hide an END marker. need reports that the window ends
-// before the frame does.
-func keyFrameLen(w []byte, p, limit int) (n int, need bool) {
+// keyFrame parses the line frame at p, at most keyFrameMax bytes and
+// ending at or before limit: a sequence of
+//
+//   - indentation: spaces, tabs;
+//   - leading operators of a continued expression: '+', '&', '.';
+//   - anchors: quote markers ('>'), comment markers ('#', "//", ';', '*',
+//     '%', '|'), opening quotes (", '), and line numbers — digits, optional
+//     spaces, then a tab, an arrow, ':', '|' or a bar ("    12→", "12\t",
+//     "  12 | ", "12:", "12│");
+//
+// each byte raw or escaped (keyFrameByte). It never takes a '-', so it
+// cannot hide an END marker. markEnd is where the last anchor ends, past
+// the one space that conventionally follows a quote or comment marker, or
+// -1 without an anchor: what follows it up to the content may be a diff
+// marker (keyLineMarker). need reports that the window ends before the
+// frame is decided; it only does when the window ends within keyFrameMax
+// bytes, since a token running past that is no frame.
+func keyFrame(w []byte, p, limit int) (n, markEnd int, need bool) {
 	start := p
+	markEnd = -1
 	limit = min(limit, len(w), start+keyFrameMax)
-	// The window ends before the frame is decided only when it ends
-	// within keyFrameMax bytes: a token running past that is no frame.
 	short := len(w) < start+keyFrameMax
 	for p < limit {
-		var next int
-		switch c := w[p]; {
-		case c == ' ' || c == '\t' || c == '>' || c == '#' || c == ';' || c == '*' ||
-			c == '%' || c == '|' || c == '+' || c == '"' || c == '\'':
-			next = p + 1
-		case c == '/':
-			if p+1 >= len(w) {
-				return p - start, short
+		b, next, need := keyFrameByte(w, p)
+		if need {
+			return p - start, markEnd, short
+		}
+		anchor, spaced := false, false
+		switch {
+		case b == ' ' || b == '\t' || b == '+' || b == '&' || b == '.':
+		case b == '>' || b == '#' || b == ';' || b == '*' || b == '%' || b == '|':
+			anchor, spaced = true, true
+		case b == '"' || b == '\'':
+			anchor = true
+		case b == '/':
+			b2, n2, need := keyFrameByte(w, next)
+			if need {
+				return p - start, markEnd, short
 			}
-			if w[p+1] != '/' {
-				return p - start, false
+			if b2 != '/' {
+				return p - start, markEnd, false
 			}
-			next = p + 2
-		case c == '\\':
-			j := bsRunEnd(w, p)
-			if j >= len(w) {
-				return p - start, short
-			}
-			if w[j] != 't' && w[j] != '"' && w[j] != '\'' {
-				return p - start, false
-			}
-			next = j + 1
-		case isDigit(c):
+			next, anchor, spaced = n2, true, true
+		case b >= '0' && b <= '9' && next == p+1:
 			j := p
 			for j < len(w) && isDigit(w[j]) && j-p < keyNumberMax {
 				j++
 			}
-			e, need := keyNumberSep(w, j)
+			for k := 0; j < len(w) && w[j] == ' ' && k < 8; k++ {
+				j++
+			}
+			sep, n2, need := keyFrameByte(w, j)
 			if need {
-				return p - start, short
+				return p - start, markEnd, short
 			}
-			if e == 0 {
-				return p - start, false
+			switch sep {
+			case '\t', keyArrow, keyBar, ':', '|':
+				next, anchor = n2, true
+			default:
+				return p - start, markEnd, false
 			}
-			next = e
 		default:
-			return p - start, false
+			return p - start, markEnd, false
 		}
 		if next > limit {
 			break
 		}
 		p = next
+		if anchor {
+			markEnd = p
+			if spaced && p < limit && w[p] == ' ' {
+				p++
+				markEnd = p
+			}
+		}
 	}
-	return p - start, p == len(w) && short
+	return p - start, markEnd, p == len(w) && short
+}
+
+// keyFrameLen returns the length of the line frame at p (keyFrame).
+func keyFrameLen(w []byte, p, limit int) (n int, need bool) {
+	n, _, need = keyFrame(w, p, limit)
+	return n, need
+}
+
+// keyLineMarker parses the start of a line at p up to limit: its unified
+// diff marker and frame. The marker comes first ("+> ", "-\t\"", "  " of
+// an indented line, read as a context marker), or after the frame's
+// anchors, as on the lines of a numbered or quoted patch ("    18→-",
+// "> +"). marker is 0 for a line with neither; content is where the line's
+// content starts. A '-' after the anchors is taken as a marker: a caller
+// that may find an END marker there checks for it.
+func keyLineMarker(w []byte, p, limit int) (marker byte, content int, need bool) {
+	if p < limit && (w[p] == '+' || w[p] == '-') {
+		n, need := keyFrameLen(w, p+1, limit)
+		return w[p], p + 1 + n, need
+	}
+	n, markEnd, need := keyFrame(w, p, limit)
+	c := p + n
+	from := p
+	if markEnd >= 0 {
+		from = markEnd
+	}
+	switch {
+	case from < c && (w[from] == ' ' || w[from] == '+'):
+		return w[from], c, need
+	case from == c && markEnd >= 0 && c < limit && w[c] == '-':
+		return '-', c + 1, need
+	}
+	return 0, c, need
 }
 
 // keyPlainLine reports whether the line starting at p (a body line outside
@@ -363,7 +450,7 @@ func keyPlainLine(w []byte, p int) bool {
 	for j < len(w) && j-p < keyNumberMax && isDigit(w[j]) {
 		j++
 	}
-	return j < len(w) && w[j] != '\t' && w[j] != 0xe2 && w[j] != '\\' && !isDigit(w[j])
+	return j < len(w) && !isDigit(w[j]) && strings.IndexByte(" \t\\:|\xe2", w[j]) < 0
 }
 
 // keyLetterLine holds the bytes that open a key line and nothing else:
@@ -404,23 +491,18 @@ func keyLineStart(w []byte, at int, fromInput bool) (int, bool) {
 	return 0, false
 }
 
-// keyLinePrefix parses w[ls:at], what precedes at on its line: a unified
-// diff marker ('+', '-' or ' ') then a frame, or a frame alone. marker is
-// 0 for a frame alone. A prefix that is a frame alone but starts with a
-// space reads as a context marker and a frame.
+// keyLinePrefix parses w[ls:at], what precedes at on its line: a frame
+// and a unified diff marker before or after it (keyLineMarker). marker is
+// 0 when there is none.
 func keyLinePrefix(w []byte, ls, at int) (marker byte, ok bool) {
 	if ls < 0 || ls > at || at > len(w) {
 		return 0, false
 	}
-	if ls < at && diffSides(w[ls]) != 0 {
-		if n, _ := keyFrameLen(w, ls+1, at); n == at-ls-1 {
-			return w[ls], true
-		}
+	marker, content, _ := keyLineMarker(w, ls, at)
+	if content != at {
+		return 0, false
 	}
-	if n, _ := keyFrameLen(w, ls, at); n == at-ls {
-		return 0, true
-	}
-	return 0, false
+	return marker, true
 }
 
 // keyHunkHeader reports a unified diff hunk header line at p ("@@ -12,7

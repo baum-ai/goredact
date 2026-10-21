@@ -266,9 +266,9 @@ func pemArmorBreak(window []byte, pos int, escaped bool) (end int, ok, need bool
 }
 
 // pemArmorLine parses one RFC 4880 armor header line ("Key: Value")
-// following the line ending at end: the line break, then the BEGIN line's
-// diff marker (required when there is one, else an optional '+' or '-'),
-// a line frame (keyFrameLen: an indentation, as in a YAML block, a quote
+// following the line ending at end: the line break, then up to two diff
+// markers or list bullets (whichever file version: the line is masked
+// with the key), a line frame (keyFrameLen: an indentation, as in a YAML block, a quote
 // or comment marker, an opening quote), the key, ':' with an optional ' '
 // or '\t', and a value of up to pemArmorLineMax bytes. A value may hold
 // bytes the body grammar refuses ("Version: GnuPG v1.4.11 (GNU/Linux)",
@@ -277,7 +277,7 @@ func pemArmorBreak(window []byte, pos int, escaped bool) (end int, ok, need bool
 // ends at a bare '"' and may hold escapes (`\"`, `\\`, `\t`, `\/`, `\u0022`).
 // It returns the offset of the line break ending the header line. cut
 // reports that a non-final window ends before the line is decided.
-func pemArmorLine(window []byte, end int, marker byte, escaped, final bool) (lineEnd int, ok, cut bool) {
+func pemArmorLine(window []byte, end int, escaped, final bool) (lineEnd int, ok, cut bool) {
 	p, ok, need := pemArmorBreak(window, end, escaped)
 	if !ok {
 		return 0, false, need && !final
@@ -285,10 +285,12 @@ func pemArmorLine(window []byte, end int, marker byte, escaped, final bool) (lin
 	if p >= len(window) {
 		return 0, false, !final
 	}
-	switch {
-	case marker != 0 && window[p] != marker:
-		return 0, false, false
-	case marker != 0 || window[p] == '+' || window[p] == '-':
+	// Any diff marker, or none: a header line is masked with the key
+	// whichever file version it belongs to, and the BEGIN line's first
+	// byte may be an indentation or a list bullet ("  ", "- ") the header
+	// lines do not share. A second one is a list bullet or a nested
+	// marker on a patch line ("+- Comment: ...").
+	for k := 0; k < 2 && p < len(window) && diffSides(window[p]) != 0; k++ {
 		p++
 	}
 	f, need := keyFrameLen(window, p, len(window))
@@ -360,31 +362,14 @@ func pemArmorLine(window []byte, end int, marker byte, escaped, final bool) (lin
 	}
 }
 
-// armorMarker returns the diff marker a header line of this block opens
-// with: the BEGIN line's, which its versions name (no END has been read
-// while headers are still being skipped).
-func (s *pemScanner) armorMarker() byte {
-	if !s.diff {
-		return 0
-	}
-	switch s.sides {
-	case diffOld:
-		return '-'
-	case diffNew:
-		return '+'
-	}
-	return ' '
-}
-
 // armorScan skips RFC 4880 armor header lines after the line ending at
 // end — the BEGIN line, or the last header line a previous window read —
 // up to pemArmorLines of them. It returns where the body begins, or, when
 // a non-final window ends inside the headers, open with the end of the
 // last header line read as the resume point.
 func (s *pemScanner) armorScan(window []byte, end int, final bool) (pos int, open bool) {
-	marker := s.armorMarker()
 	for s.armorLines < pemArmorLines {
-		next, ok, cut := pemArmorLine(window, end, marker, s.escaped, final)
+		next, ok, cut := pemArmorLine(window, end, s.escaped, final)
 		if cut {
 			return end, true
 		}
@@ -536,41 +521,54 @@ func (s *pemScanner) newLine(window []byte, i int, final bool) (next int, cut bo
 }
 
 // lineStart processes the start of a line at i, just past a line feed:
-// it skips a unified diff hunk header line ("@@ -1,7 +1,9 @@ ..."), which
-// a key spanning two hunks of a patch holds and which is masked with it,
-// or, with diff, the line's marker (recorded for its END line), then the
-// line's frame (keyFrameLen). It returns where the body scan goes on; cut
+// with diff, the line's marker (recorded for its END line) and frame
+// (keyLineMarker), else the frame (keyFrameLen); then a unified diff hunk
+// header line ("@@ -1,7 +1,9 @@ ..."), which a key spanning two hunks of a
+// patch holds and which is masked with it. It returns where the body scan goes on; cut
 // reports that the window ends before the line start is decided.
 func (s *pemScanner) lineStart(window []byte, i int, final bool) (next int, cut bool) {
-	if end, ok, need := keyHunkHeader(window, i, final); ok {
-		return end, false
-	} else if need {
-		return i, true
-	}
 	start := i
 	var sides uint8
+	framed := false
 	if i < len(window) {
 		if _, isEnd := pemEndMarker(window, i); !isEnd {
 			switch {
 			case s.diff:
-				if sides = diffSides(window[i]); sides != 0 {
-					i++
+				m, c, need := keyLineMarker(window, i, len(window))
+				if need && !final {
+					return start, true
 				}
+				if m == '-' && c > i+1 {
+					if _, isEnd := pemEndMarker(window, c-1); isEnd {
+						m, c = 0, c-1 // "> -----END": the '-' opens the END marker
+					}
+				}
+				sides, i, framed = diffSides(m), c, true
 			case window[i] == '-':
 				// Outside diff mode (the BEGIN line had more than a
 				// marker and a frame before its trigger: code, a key
-				// name), a removed line's marker before a frame.
-				if f, _ := keyFrameLen(window, i+1, len(window)); f > 0 {
+				// name), a removed line's marker before a frame or a hunk
+				// header.
+				if f, _ := keyFrameLen(window, i+1, len(window)); f > 0 || bytes.HasPrefix(window[i+1:], []byte("@@ -")) {
 					i++
 				}
 			}
 		}
 	}
-	f, need := keyFrameLen(window, i, len(window))
-	if need && !final {
+	if !framed {
+		f, need := keyFrameLen(window, i, len(window))
+		if need && !final {
+			return start, true
+		}
+		i += f
+	}
+	// A hunk header, behind the frame and marker of a numbered or quoted
+	// patch too ("    40→@@ -40,7 +40,7 @@").
+	if end, ok, need := keyHunkHeader(window, i, final); ok {
+		return end, false
+	} else if need {
 		return start, true
 	}
-	i += f
 	s.frameEnd, s.frameSides = i, sides
 	return i, false
 }
@@ -1219,40 +1217,27 @@ func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state 
 			continue
 		}
 
-		// A hunk header between two hunks of a patch: a key's lines go on
-		// in the next hunk. It is stepped over, and masked between counted
-		// lines.
-		if s.diff {
-			if end, ok, need := keyHunkHeader(window, p, final); ok || need {
-				if !ok {
-					return s.cutOpen(lineStart, ppkModeLine)
-				}
-				next, ok, need := keyLineEnd(window, end)
-				switch {
-				case need && !final:
-					return s.cutOpen(lineStart, ppkModeLine)
-				case !ok, lineStart >= s.reach && s.stepped >= ppkMaxStepLines:
-					return 0, 0, false
-				}
-				s.stepped++
-				p = next
-				continue
-			}
-		}
-
-		sides := [2]bool{false, true}
-		if s.diff {
-			var ok bool
-			if sides, ok = ppkSides(window[p]); !ok {
+		l, ok, cut := s.head(window, p, final)
+		switch {
+		case cut:
+			return s.cutOpen(lineStart, ppkModeLine)
+		case !ok:
+			return 0, 0, false
+		case l.hunk >= 0:
+			// A hunk header between two hunks of a patch: a key's lines go
+			// on in the next hunk. It is stepped over, and masked between
+			// counted lines.
+			if lineStart >= s.reach && s.stepped >= ppkMaxStepLines {
 				return 0, 0, false
 			}
-			p++
+			s.stepped++
+			p = l.hunk
+			continue
+		case s.diff && !l.marked:
+			return 0, 0, false
 		}
-		f, need := keyFrameLen(window, p, len(window))
-		if need && !final {
-			return s.cutOpen(lineStart, ppkModeLine)
-		}
-		p += f
+		sides := l.sides
+		p = l.content
 
 		// In a diff, a followed version's header after the first: the other
 		// version of a changed key, after the old version's lines or the new
@@ -1275,7 +1260,7 @@ func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state 
 
 		q := ppkContent(window, p)
 		next, complete, need := keyLineEnd(window, q)
-		cut := !complete && need && !final
+		cut = !complete && need && !final
 		if cut && q == p && s.counts(sides) {
 			// Nothing of the line's body is in view yet.
 			return s.cutOpen(lineStart, ppkModeLine)
@@ -1376,34 +1361,66 @@ func (s *ppkScanner) overflowing() bool {
 // returns the next line's start; cut reports that the window ends before
 // the line is decided.
 func (s *ppkScanner) overflow(window []byte, p int, final bool) (next int, ok, cut bool) {
-	start := p
-	if s.diff {
-		// A hunk header: the key's lines may go on in the next hunk.
-		if end, ok, need := keyHunkHeader(window, p, final); ok || need {
-			if !ok {
-				return 0, false, true
-			}
-			next, ok, need := keyLineEnd(window, end)
-			if need && !final {
-				return 0, false, true
-			}
-			s.stepped++
-			return next, ok, false
-		}
-		if p >= len(window) {
-			return 0, false, !final
-		}
-		sides, ok := ppkSides(window[p])
-		if !ok || !(sides[ppkOld] && s.allow[ppkOld] || sides[ppkNew] && s.allow[ppkNew]) {
-			return 0, false, false
-		}
-		p++
-	}
-	f, need := keyFrameLen(window, p, len(window))
-	if need && !final {
+	l, ok, cut := s.head(window, p, final)
+	switch {
+	case cut:
 		return 0, false, true
+	case !ok:
+		return 0, false, false
+	case l.hunk >= 0:
+		// A hunk header: the key's lines may go on in the next hunk.
+		s.stepped++
+		return l.hunk, true, false
+	case s.diff && !(l.marked && (l.sides[ppkOld] && s.allow[ppkOld] || l.sides[ppkNew] && s.allow[ppkNew])):
+		return 0, false, false
 	}
-	return s.overflowBody(window, start, p+f, final)
+	return s.overflowBody(window, p, l.content, final)
+}
+
+// ppkLine is the start of a line as a PPK scan reads it.
+type ppkLine struct {
+	sides   [2]bool // the versions of its diff marker; outside a diff, the new one
+	marked  bool    // in diff mode, the line has a marker
+	content int     // where its content starts
+	hunk    int     // for a hunk header line, the start of the next line, else -1
+}
+
+// head reads the start of the line at p: in diff mode its marker and frame
+// in either order (keyLineMarker), else its frame (keyFrameLen), then a
+// hunk header behind them. cut reports that a non-final window ends before
+// that is decided; !ok, a hunk header at the end of input.
+func (s *ppkScanner) head(window []byte, p int, final bool) (l ppkLine, ok, cut bool) {
+	l = ppkLine{sides: [2]bool{false, true}, hunk: -1}
+	if s.diff {
+		m, c, need := keyLineMarker(window, p, len(window))
+		if need && !final {
+			return l, false, true
+		}
+		l.content = c
+		if m != 0 {
+			l.sides, _ = ppkSides(m)
+			l.marked = true
+		}
+	} else {
+		f, need := keyFrameLen(window, p, len(window))
+		if need && !final {
+			return l, false, true
+		}
+		l.content = p + f
+	}
+	if end, ok, need := keyHunkHeader(window, l.content, final); ok {
+		next, ok, need := keyLineEnd(window, end)
+		switch {
+		case need && !final:
+			return l, false, true
+		case !ok:
+			return l, false, false
+		}
+		l.hunk = next
+	} else if need {
+		return l, false, true
+	}
+	return l, true, false
 }
 
 // overflowBody is overflow from body, where the content of the line at
@@ -1425,15 +1442,18 @@ func (s *ppkScanner) overflowBody(window []byte, start, body int, final bool) (n
 		if !ok {
 			return 0, false, false
 		}
-		g := next
-		if s.diff && g < len(window) && diffSides(window[g]) != 0 {
-			g++
+		var c int
+		if s.diff {
+			_, c, need = keyLineMarker(window, next, len(window))
+		} else {
+			var f int
+			f, need = keyFrameLen(window, next, len(window))
+			c = next + f
 		}
-		f, need := keyFrameLen(window, g, len(window))
 		if need && !final {
 			return 0, false, true
 		}
-		if rest := window[g+f:]; !bytes.HasPrefix(rest, ppkPrivateMAC) {
+		if rest := window[c:]; !bytes.HasPrefix(rest, ppkPrivateMAC) {
 			if !final && len(rest) < len(ppkPrivateMAC) && bytes.HasPrefix(ppkPrivateMAC, rest) {
 				return 0, false, true
 			}

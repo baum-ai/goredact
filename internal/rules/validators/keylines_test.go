@@ -100,6 +100,17 @@ func TestKeyFrameLen(t *testing.T) {
 		{"> 12", 2, true},
 		{"  ", 2, true},
 		{strings.Repeat(" ", 100) + "M", keyFrameMax, false},
+		{"  12 | MIIE", 7, false},
+		{"12|MIIE", 3, false},
+		{"12:MIIE", 3, false},
+		{"   7│ MIIE", 8, false},
+		{`\u003e MIIE`, 7, false},
+		{`\/\/ MIIE`, 5, false},
+		{"    + \"MIIE", 7, false},
+		{"\" . MIIE", 4, false},
+		{"& \"MIIE", 3, false},
+		{"12 MIIE", 0, false},
+		{"12 -----END", 0, false},
 	} {
 		n, need := keyFrameLen([]byte(tc.in), 0, len(tc.in))
 		if n != tc.n || need != tc.need {
@@ -208,6 +219,20 @@ var keyShapes = map[string]func(string) string{
 		}
 		return strings.Join(lines, "\n")
 	},
+	"numbered patch": func(s string) string {
+		lines := strings.Split(s, "\n")
+		for i := range lines {
+			lines[i] = fmt.Sprintf("%6d→+", i+1) + lines[i]
+		}
+		return strings.Join(lines, "\n")
+	},
+	"bar numbers": func(s string) string {
+		lines := strings.Split(s, "\n")
+		for i := range lines {
+			lines[i] = fmt.Sprintf("%4d | ", i+1) + lines[i]
+		}
+		return strings.Join(lines, "\n")
+	},
 	"hunks": func(s string) string {
 		lines := strings.Split(s, "\n")
 		for i := range lines {
@@ -313,6 +338,40 @@ func TestPEMChainEscapeCutAtTriggerWindowEnd(t *testing.T) {
 		start, end, ok, _, _ := chainSpan(pemBlock, text, 0, la)
 		if !ok || start != wantS || end < wantE {
 			t.Fatalf("lookahead %d: chained [%d,%d) ok=%v, whole [%d,%d)", la, start, end, ok, wantS, wantE)
+		}
+	}
+}
+
+func TestKeyLineMarker(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		marker  byte
+		content int
+	}{
+		{"+MIIE", '+', 1},
+		{"-MIIE", '-', 1},
+		{" MIIE", ' ', 1},
+		{"  MIIE", ' ', 2},
+		{"\tMIIE", 0, 1},
+		{"MIIE", 0, 0},
+		{"+> MIIE", '+', 3},
+		{"> MIIE", 0, 2},
+		{"> +MIIE", '+', 3},
+		{">  MIIE", ' ', 3},
+		{"> -MIIE", '-', 3},
+		{"     18→-MIIE", '-', 11},
+		{"     18→+MIIE", '+', 11},
+		{"     18→ MIIE", ' ', 11},
+		{"     18→MIIE", 0, 10},
+		{"10→MIIE", 0, 5},
+		{"\t\"MIIE", 0, 2},
+		{"    + \"MIIE", 0, 7},
+		{"# MIIE", 0, 2},
+		{"#  MIIE", ' ', 3},
+	} {
+		m, c, _ := keyLineMarker([]byte(tc.in), 0, len(tc.in))
+		if m != tc.marker || c != tc.content {
+			t.Errorf("keyLineMarker(%q) = %q, %d; want %q, %d", tc.in, m, c, tc.marker, tc.content)
 		}
 	}
 }
