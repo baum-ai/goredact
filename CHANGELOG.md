@@ -3,7 +3,7 @@
 All notable changes are documented here. This project follows semantic
 versioning.
 
-## Unreleased
+## v0.4.0 — 2026-10-22
 
 - **Fixed:** private keys in string literals escaped by PHP and .NET JSON
   encoders. `json_encode` writes '/' as `\/` and System.Text.Json writes
