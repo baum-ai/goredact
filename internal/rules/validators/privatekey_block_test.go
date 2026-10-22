@@ -26,9 +26,9 @@ var (
 	ppkBlock = blockFuncs{"ppk", ppkTrig, PuTTYPrivateKeyBegin, PuTTYPrivateKeyExtend}
 )
 
-// blockLookbehind is both key rules' lookbehind: the trigger line's diff
-// marker and the byte before it.
-const blockLookbehind = 2
+// blockLookbehind is both key rules' lookbehind: the trigger line's
+// frame, its diff marker and the line break before them.
+const blockLookbehind = keyLookbehind
 
 // chainSpan replays the engine's windowing over text for a trigger at
 // trigStart: Begin over the trigger window, then Extend over each
@@ -319,6 +319,10 @@ func FuzzBlockChainMatchesWholeScan(f *testing.F) {
 	f.Add([]byte("RSA PRIVATE KEY-----\n"+pemB64LineA+"\n"+pemB64LineB+"\n-----END RSA PRIVATE KEY-----\n"), uint8(0), uint16(300))
 	f.Add([]byte("2: ssh-rsa\n+Private-Lines: 3\n+"+pemB64LineA+"\n+"+pemB64LineB+"\n+"+pemB64LineC+"\n"), uint8(1), uint16(200))
 	f.Add([]byte(`EC PRIVATE KEY-----\n`+pemB64LineA+`\\n`+pemB64LineB+`\n-----END EC PRIVATE KEY-----\n"}`), uint8(0), uint16(260))
+	f.Add([]byte("RSA PRIVATE KEY-----\n> "+pemB64LineA+"\n> "+pemB64LineB+"\n@@ -1,2 +1,2 @@ "+pemB64LineC+"\n>   12\u2192"+pemB64LineC+"\n> -----END RSA PRIVATE KEY-----\n"), uint8(0), uint16(300))
+	f.Add([]byte(`RSA PRIVATE KEY-----\n" +`+"\n\t\""+strings.ReplaceAll(pemB64LineA, "/", `\/`)+`\u002B\n" +`+"\n"), uint8(0), uint16(280))
+	f.Add([]byte(`3: ssh-rsa\n  Private-Lines: 1\n  `+pemB64LineA+`\n  `+pemB64LineB+`\n  Private-MAC: 00\n`), uint8(1), uint16(220))
+	f.Add([]byte("2: ssh-rsa\n+Private-Lines: 3\n+"+pemB64LineA+"\n@@ -9,3 +9,3 @@\n+"+pemB64LineB+"\n+"+pemB64LineC+"\n"), uint8(1), uint16(240))
 	f.Fuzz(func(t *testing.T, data []byte, which uint8, la uint16) {
 		if len(data) > 8<<10 {
 			data = data[:8<<10]
@@ -361,7 +365,7 @@ func FuzzBlockChainMatchesWholeScan(f *testing.F) {
 		// of at most ppkMaxStepLine bytes, are masked across windows.
 		extraOK := end <= max(wantE, len(fn.trigger)+ppkHeaderReach)+lookahead+longest+ppkMaxStepLines*(ppkMaxStepLine+1)
 		if fn.name == "pem" && over > 0 {
-			extraOK = pemSeparatorsOnly(text[wantE:end])
+			extraOK = pemNoBody(text, wantE, end)
 		}
 		if ok != wantOK || ok && (start != wantS || over < 0 || !opened && over != 0 || !extraOK) {
 			t.Fatalf("%s lookahead %d opened=%v: chained (%d,%d,%v), want (%d,%d,%v)", fn.name, lookahead, opened, start, end, ok, wantS, wantE, wantOK)
@@ -415,26 +419,38 @@ func TestPPKHeaderReachMatchesSpec(t *testing.T) {
 	}
 }
 
-// pemSeparatorsOnly reports whether b holds no key material: only bytes a
-// PEM body scan passes between base64 runs (whitespace, ':', ',', '-',
-// and backslash escapes).
-func pemSeparatorsOnly(b []byte) bool {
-	for i := 0; i < len(b); i++ {
-		switch c := b[i]; {
-		case c == '\\':
-			for i+1 < len(b) && b[i+1] == '\\' {
-				i++
-			}
-			if i+1 < len(b) && strings.IndexByte("nrt\"", b[i+1]) >= 0 {
-				i++
-			}
-		case pemBase64[c]:
-			return false
+// pemNoBody reports whether a PEM body scan reads no base64 between
+// offsets at and end of text: only bytes it passes between base64 runs
+// (whitespace, ':', ',', '-', backslash escapes, line frames, quote tails
+// and hunk header lines), which a chained scan may mask past a body's
+// last base64 byte. The scan reads the text past end too, so a token that
+// the chain took whole across end (a backslash run, a quote and the line
+// break after it) is judged with all its bytes in view; it stops at the
+// first token boundary at or past end, or at a backslash run across end.
+// It is tried outside and in diff mode.
+func pemNoBody(text []byte, at, end int) bool {
+	for _, diff := range []bool{false, true} {
+		s := pemScanner{plausible: true, lastB64End: -1, frameEnd: -1, diff: diff, sides: diffOld | diffNew}
+		window := text[at:]
+		i := 0
+		if at == 0 || keyAfterBreak(text, at) {
+			s.nl = true
+			i, _ = s.lineStart(window, 0, true)
+		}
+		pos, stop := s.scan(window, i, end-at, true)
+		if s.lastB64End >= 0 {
+			continue
+		}
+		// The scan passes end, or stops at a backslash run that crosses
+		// it (the chain resumed inside the run, which the window cut).
+		if pos >= end-at && (stop == pemStopOpen || stop == pemStopWindow) ||
+			stop == pemStopJunk && pos < end-at && window[pos] == '\\' && bsRunEnd(window, pos) >= end-at {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // pemArmorWindowMin is the shortest window that holds a whole armor header
 // line: value, key, indentation, separator, marker and line breaks.
-const pemArmorWindowMin = pemArmorLineMax + pemLabelMax + pemArmorIndentMax + 16
+const pemArmorWindowMin = pemArmorLineMax + pemLabelMax + keyFrameMax + keyTailMax + 2*keyRunMax + 16

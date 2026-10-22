@@ -8,7 +8,7 @@ import "github.com/baum-ai/goredact/internal/rules/validators"
 // hex characters of the SHA-256 digest of the canonical serialization of
 // the generated rule table below (see tools/rulegen), so it changes
 // exactly when the generated rules change.
-const Version = "builtin-341f1ad0813e"
+const Version = "builtin-f834edb2c589"
 
 func init() {
 	RegisterBuiltins([]Rule{
@@ -653,7 +653,7 @@ func init() {
 			Validate:      validators.PEMPrivateKey,
 			MinProfile:    ProfileFast,
 			Confidence:    ConfidenceHigh,
-			MaxLookbehind: 2,
+			MaxLookbehind: 72,
 			MaxLookahead:  16384,
 			Block:         &Block{Begin: validators.PEMPrivateKeyBegin, Extend: validators.PEMPrivateKeyExtend},
 		},
@@ -666,7 +666,7 @@ func init() {
 			Validate:      validators.PuTTYPrivateKey,
 			MinProfile:    ProfileFast,
 			Confidence:    ConfidenceHigh,
-			MaxLookbehind: 2,
+			MaxLookbehind: 72,
 			MaxLookahead:  16384,
 			Block:         &Block{Begin: validators.PuTTYPrivateKeyBegin, Extend: validators.PuTTYPrivateKeyExtend},
 		},

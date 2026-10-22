@@ -1,8 +1,11 @@
 package validators
 
-// Private-key material validators: PEM-encapsulated private keys
-// (raw multi-line and JSON-escaped single-line forms) and PuTTY PPK
-// private-key sections, in plain text and in unified diff patches.
+// Private-key material validators: PEM-encapsulated private keys and
+// PuTTY PPK private-key sections, in plain text, in string literals
+// (JSON-escaped, also as PHP and .NET encoders escape '/' and '+'), behind
+// per-line prefixes (quotes, comments, line numbers, indentation),
+// concatenated from one string literal per line, and in unified diff
+// patches. keylines.go recognises those line shapes.
 //
 // Both rules are block rules (rules.Block). The engine confirms a candidate
 // with the Begin function over the trigger's bounded window, exactly as a
@@ -44,29 +47,44 @@ package validators
 //   - RFC 4880 armor headers ("Version: GnuPG v1.4.11 (GNU/Linux)",
 //     "Comment: ...") directly after the BEGIN line are part of the block,
 //     whatever bytes their values hold.
+//   - At the start of every line (after a raw or an escaped line feed)
+//     the scan skips the line's frame — an email or Markdown quote ("> >
+//     "), a comment marker ("# ", "// ", " * "), a line number ("    12→",
+//     "12\t"), an indentation, an opening quote — and a unified diff hunk
+//     header line ("@@ -1,7 +1,9 @@ ...", which git may give a key line as
+//     its section heading): a key spanning two hunks is masked whole,
+//     hunk header included. A quote closing a string literal's line ("...\n"
+//     +) is taken with its line break.
 //
 // Span semantics, PPK: only the Private-Lines section is redacted — from
 // the first byte of "Private-Lines:" through the last base64 byte of the
 // last private body line (the terminating newline is not included; the
 // public portion of the file is left intact). The same fail-safe applies
 // once the Private-Lines header and at least one plausible body line have
-// been seen.
+// been seen. Body lines may carry the same frames and line ends as PEM
+// lines, and base64 lines past a count that is too low are masked up to
+// the Private-MAC line (ppkScanner.overflow).
 //
 // Diff patches: in a unified diff every line starts with '+' (the new file
 // version), '-' (the old one) or ' ' (context, both). A key whose trigger
 // line carries a marker belongs to those versions:
 //
-//   - PEM: the body grammar accepts the markers ('+' is base64, '-' and ' '
-//     are body punctuation), and an END marker on a marked line closes only
-//     the versions that line belongs to, so an added key is not closed by
-//     the END of a removed one.
+//   - PEM: each line's marker is read at its start (pemScanner.lineStart;
+//     lines without one are accepted too), and an END marker on a marked
+//     line closes only the versions that line belongs to, so an added key
+//     is not closed by the END of a removed one.
 //   - PPK: a "Private-Lines:" header behind one marker switches the scan to
 //     diff mode, in which each version's section is counted separately (see
 //     ppkScanner).
+//
+// A marker may be followed by a frame ("+> " on a quoted line, "+\t\"" on
+// a line of Go source), so both rules read the trigger line from its
+// start: their lookbehind is keyLookbehind. A frame that starts with a
+// space reads as a context marker and a frame, so an indented key (a YAML
+// block) is read as context lines, which belong to both versions.
 
 import (
 	"bytes"
-	"strings"
 )
 
 const (
@@ -104,10 +122,6 @@ const (
 	pemArmorLines   = 32
 	pemArmorLineMax = 1024
 
-	// pemArmorIndentMax bounds the indentation accepted before an armor
-	// header line (a key in an indented YAML or Markdown block).
-	pemArmorIndentMax = 16
-
 	// ppkMaxCount bounds the "Private-Lines: N" count: 1-5 digits.
 	ppkMaxCount = 99999
 
@@ -122,6 +136,10 @@ const (
 	// Private-Lines header may start, for each file version: the
 	// putty-private-key rule's lookahead (TestPPKHeaderReachMatchesSpec).
 	ppkHeaderReach = 16384
+
+	// ppkMaxOverflow bounds the base64 lines masked past a Private-Lines
+	// count that is too low (see ppkScanner.overflow).
+	ppkMaxOverflow = 100
 )
 
 var (
@@ -131,6 +149,7 @@ var (
 	pemEscCR        = []byte(`\r`)
 	pemEscLF        = []byte(`\n`)
 	ppkPrivateLines = []byte("Private-Lines:")
+	ppkPrivateMAC   = []byte("Private-MAC:")
 )
 
 // pemBase64 reports whether a byte can appear in a base64 body (standard
@@ -225,63 +244,71 @@ const (
 	diffNew
 )
 
-// pemLineBreak reports the length of a line break at pos: "\n", "\r\n", or
-// their escaped two-byte forms `\n` and `\r\n` when escaped is set; 0 when
-// there is none.
-func pemLineBreak(window []byte, pos int, escaped bool) int {
-	switch {
-	case pemHasAt(window, pos, []byte("\n")):
-		return 1
-	case pemHasAt(window, pos, []byte("\r\n")):
-		return 2
-	case escaped && pemHasAt(window, pos, pemEscLF):
-		return 2
-	case escaped && pemHasAt(window, pos, []byte(`\r\n`)):
-		return 4
+// pemArmorBreak reports the line break ending an armor header line at
+// pos: a raw one, or with escaped set (a key in a string literal) an
+// escaped one; either may close a string literal's line first (see
+// keyLineEnd). end is one past it.
+func pemArmorBreak(window []byte, pos int, escaped bool) (end int, ok, need bool) {
+	if escaped {
+		if pos < len(window) && window[pos] == '\\' && bsRunEnd(window, pos)-pos > keyRunMax {
+			return 0, false, false // no line break: decided in any window holding the line
+		}
+		return keyLineEnd(window, pos)
 	}
-	return 0
+	if pos < len(window) && (window[pos] == '"' || window[pos] == '\'') {
+		_, end, ok, need = keyQuoteTail(window, pos)
+		if ok && window[end-1] != '\n' {
+			return 0, false, false // an escaped break: not a raw key
+		}
+		return end, ok, need
+	}
+	if pos < len(window) && window[pos] == '\\' {
+		return 0, false, false
+	}
+	return keyBreak(window, pos)
 }
 
 // pemArmorLine parses one RFC 4880 armor header line ("Key: Value")
-// following the line ending at end: the line break, then the BEGIN line's
-// diff marker (required when there is one, else an optional '+' or '-'),
-// an indentation of up to pemArmorIndentMax spaces or tabs (an indented
-// YAML block), the key, ':' with an optional ' ' or '\t', and a value of
-// up to pemArmorLineMax bytes. A value may hold bytes the body grammar
-// refuses ("Version: GnuPG v1.4.11 (GNU/Linux)",
+// following the line ending at end: the line break, then up to two diff
+// markers or list bullets (whichever file version: the line is masked
+// with the key), a line frame (keyFrameLen: an indentation, as in a YAML block, a quote
+// or comment marker, an opening quote), the key, ':' with an optional ' '
+// or '\t', and a value of up to pemArmorLineMax bytes. A value may hold
+// bytes the body grammar refuses ("Version: GnuPG v1.4.11 (GNU/Linux)",
 // `Comment: "Alice" <alice@example.com>`), so the line is taken whole. In
-// a JSON-escaped key (lines broken by `\n`) a value ends at a bare '"' and
-// may hold the escapes `\"`, `\\`, `\t` and `\/`. It returns the offset of
-// the line break ending the header line. cut reports that a non-final
-// window ends before the line is decided.
-func pemArmorLine(window []byte, end int, marker byte, escaped, final bool) (lineEnd int, ok, cut bool) {
-	// pemLineBreak and the escapes look at most 4 bytes ahead: closer than
-	// that to the end of a non-final window, nothing is decided yet.
-	short := func(p int) bool { return !final && len(window)-p < 4 }
-	if short(end) {
+// a key in a string literal (lines broken by an escaped `\n`) a value
+// ends at a bare '"' and may hold escapes (`\"`, `\\`, `\t`, `\/`, `\u0022`).
+// It returns the offset of the line break ending the header line. cut
+// reports that a non-final window ends before the line is decided.
+func pemArmorLine(window []byte, end int, escaped, final bool) (lineEnd int, ok, cut bool) {
+	p, ok, need := pemArmorBreak(window, end, escaped)
+	if !ok {
+		return 0, false, need && !final
+	}
+	if p >= len(window) {
+		return 0, false, !final
+	}
+	// Any diff marker, or none: a header line is masked with the key
+	// whichever file version it belongs to, and the BEGIN line's first
+	// byte may be an indentation or a list bullet ("  ", "- ") the header
+	// lines do not share. A second one is a list bullet or a nested
+	// marker on a patch line ("+- Comment: ...").
+	for k := 0; k < 2 && p < len(window) && diffSides(window[p]) != 0; k++ {
+		p++
+	}
+	f, need := keyFrameLen(window, p, len(window))
+	if need && !final {
 		return 0, false, true
 	}
-	p := end + pemLineBreak(window, end, escaped)
-	if p == end || p >= len(window) {
-		return 0, false, !final && p > end
-	}
-	switch {
-	case marker != 0 && window[p] != marker:
-		return 0, false, false
-	case marker != 0 || window[p] == '+' || window[p] == '-':
-		p++
-	}
-	for indent := 0; p < len(window) && indent < pemArmorIndentMax && (window[p] == ' ' || window[p] == '\t'); indent++ {
-		p++
-	}
+	p += f
 	key := p
 	for p < len(window) && p-key < pemLabelMax && (isASCIILetter(window[p]) || isDigit(window[p]) || window[p] == '-' && p > key) {
 		p++
 	}
-	if short(p) {
-		return 0, false, true
+	if p >= len(window) {
+		return 0, false, !final
 	}
-	if p == key || p >= len(window) || window[p] != ':' {
+	if p == key || window[p] != ':' {
 		return 0, false, false
 	}
 	p++
@@ -293,14 +320,16 @@ func pemArmorLine(window []byte, end int, marker byte, escaped, final bool) (lin
 	}
 	valueStart := p
 	for {
-		if short(p) {
-			return 0, false, true
-		}
-		if p >= len(window) || p-valueStart > pemArmorLineMax {
+		if p-valueStart > pemArmorLineMax {
 			return 0, false, false
 		}
-		if pemLineBreak(window, p, escaped) > 0 {
+		if p >= len(window) {
+			return 0, false, !final
+		}
+		if _, ok, need := pemArmorBreak(window, p, escaped); ok {
 			return p, true, false
+		} else if need && !final {
+			return 0, false, true
 		}
 		c := window[p]
 		switch {
@@ -309,29 +338,34 @@ func pemArmorLine(window []byte, end int, marker byte, escaped, final bool) (lin
 		case escaped && c == '"':
 			return 0, false, false // the end of the JSON string
 		case escaped && c == '\\':
-			if p+1 >= len(window) || strings.IndexByte(`"\t/`, window[p+1]) < 0 {
+			j := bsRunEnd(window, p)
+			if j-p > keyRunMax {
 				return 0, false, false
 			}
-			p++
+			if j >= len(window) {
+				return 0, false, !final
+			}
+			if (j-p)%2 == 0 {
+				p = j // escaped backslashes
+				continue
+			}
+			switch window[j] {
+			case '"', 't', '/', '\'':
+				p = j + 1
+				continue
+			case 'u':
+				if j+5 > len(window) {
+					return 0, false, !final
+				}
+				if _, ok := hex4(window, j+1); ok {
+					p = j + 5
+					continue
+				}
+			}
+			return 0, false, false
 		}
 		p++
 	}
-}
-
-// armorMarker returns the diff marker a header line of this block opens
-// with: the BEGIN line's, which its versions name (no END has been read
-// while headers are still being skipped).
-func (s *pemScanner) armorMarker() byte {
-	if !s.diff {
-		return 0
-	}
-	switch s.sides {
-	case diffOld:
-		return '-'
-	case diffNew:
-		return '+'
-	}
-	return ' '
 }
 
 // armorScan skips RFC 4880 armor header lines after the line ending at
@@ -340,9 +374,8 @@ func (s *pemScanner) armorMarker() byte {
 // a non-final window ends inside the headers, open with the end of the
 // last header line read as the resume point.
 func (s *pemScanner) armorScan(window []byte, end int, final bool) (pos int, open bool) {
-	marker := s.armorMarker()
 	for s.armorLines < pemArmorLines {
-		next, ok, cut := pemArmorLine(window, end, marker, s.escaped, final)
+		next, ok, cut := pemArmorLine(window, end, s.escaped, final)
 		if cut {
 			return end, true
 		}
@@ -396,6 +429,8 @@ type pemScanner struct {
 	escaped    bool   // the block's lines break on escaped `\n`
 	lastB64End int    // one past the last base64 byte seen, or -1
 	snap       uint64 // the state at lastB64End, for resuming there
+	frameEnd   int    // where the current line's diff marker and frame end, or -1
+	frameSides uint8  // with diff, the versions of that line's marker
 }
 
 // state packs what a resumed scan needs. runLen only matters up to
@@ -430,28 +465,118 @@ func resumePEM(state uint64) pemScanner {
 		escaped:    state&pemStateEscaped != 0,
 		lastB64End: 0,
 		snap:       state &^ (pemStateInRun | pemStateLineNL | 3<<pemStatePrevAt),
+		frameEnd:   0,
+		frameSides: uint8(state>>pemStatePrevAt) & (diffOld | diffNew),
 	}
 }
 
-// startsLineAt reports whether pos starts a line in a window whose offset 0
-// starts one exactly when s.nl is set.
+// startsLineAt reports whether pos starts a line — follows a raw or an
+// escaped line feed — in a window whose offset 0 starts one exactly when
+// s.nl is set.
 func (s *pemScanner) startsLineAt(window []byte, pos int) bool {
 	if pos == 0 {
 		return s.nl
 	}
-	return pos > 0 && pos <= len(window) && window[pos-1] == '\n'
+	return keyAfterBreak(window, pos)
 }
 
 // markerBefore reports the versions of the diff marker opening the line
-// right before window offset i, or 0 when the byte before i is not one.
+// whose marker and frame end at window offset i (the line start processed
+// last, or offset 0 of a resumed window), or of a marker right before i
+// opening its line; 0 otherwise.
 func (s *pemScanner) markerBefore(window []byte, i int) uint8 {
-	if i == 0 {
-		return s.prev
+	if i == s.frameEnd {
+		return s.frameSides
 	}
 	if i > 0 && i <= len(window) && s.startsLineAt(window, i-1) {
 		return diffSides(window[i-1])
 	}
 	return 0
+}
+
+// plainLine is the cheapest case of newLine, small enough to inline: a line
+// that opens with a letter or '=', behind a diff marker in diff mode.
+func (s *pemScanner) plainLine(window []byte, i int) (next int, ok bool) {
+	if !s.diff {
+		return i, i < len(window) && keyLetterLine[window[i]]
+	}
+	if i+1 < len(window) && keyLetterLine[window[i+1]] {
+		if sides := diffSides(window[i]); sides != 0 {
+			s.frameEnd, s.frameSides = i+1, sides
+			return i + 1, true
+		}
+	}
+	return i, false
+}
+
+// newLine is lineStart with a fast path for the lines of a bare key, which
+// start with key content (keyPlainLine), behind a diff marker in diff
+// mode: they hold no hunk header, END marker or frame.
+func (s *pemScanner) newLine(window []byte, i int, final bool) (next int, cut bool) {
+	if !s.diff {
+		if keyPlainLine(window, i) {
+			return i, false
+		}
+	} else if i < len(window) {
+		if sides := diffSides(window[i]); sides != 0 && keyPlainLine(window, i+1) {
+			s.frameEnd, s.frameSides = i+1, sides
+			return i + 1, false
+		}
+	}
+	return s.lineStart(window, i, final)
+}
+
+// lineStart processes the start of a line at i, just past a line feed:
+// with diff, the line's marker (recorded for its END line) and frame
+// (keyLineMarker), else the frame (keyFrameLen); then a unified diff hunk
+// header line ("@@ -1,7 +1,9 @@ ..."), which a key spanning two hunks of a
+// patch holds and which is masked with it. It returns where the body scan goes on; cut
+// reports that the window ends before the line start is decided.
+func (s *pemScanner) lineStart(window []byte, i int, final bool) (next int, cut bool) {
+	start := i
+	var sides uint8
+	framed := false
+	if i < len(window) {
+		if _, isEnd := pemEndMarker(window, i); !isEnd {
+			switch {
+			case s.diff:
+				m, c, need, _ := keyLineMarker(window, i, len(window))
+				if need && !final {
+					return start, true
+				}
+				if m == '-' && c > i+1 {
+					if _, isEnd := pemEndMarker(window, c-1); isEnd {
+						m, c = 0, c-1 // "> -----END": the '-' opens the END marker
+					}
+				}
+				sides, i, framed = diffSides(m), c, true
+			case window[i] == '-':
+				// Outside diff mode (the BEGIN line had more than a
+				// marker and a frame before its trigger: code, a key
+				// name), a removed line's marker before a frame or a hunk
+				// header.
+				if f, _ := keyFrameLen(window, i+1, len(window)); f > 0 || bytes.HasPrefix(window[i+1:], []byte("@@ -")) {
+					i++
+				}
+			}
+		}
+	}
+	if !framed {
+		f, need := keyFrameLen(window, i, len(window))
+		if need && !final {
+			return start, true
+		}
+		i += f
+	}
+	// A hunk header, behind the frame and marker of a numbered or quoted
+	// patch too ("    40→@@ -40,7 +40,7 @@").
+	if end, ok, need := keyHunkHeader(window, i, final); ok {
+		return end, false
+	} else if need {
+		return start, true
+	}
+	s.frameEnd, s.frameSides = i, sides
+	return i, false
 }
 
 // resumeAt completes st, a scanner state for resuming at pos, with what the
@@ -494,12 +619,17 @@ func (s *pemScanner) closeRun() bool {
 
 // scan runs the body scan from i: base64 characters, whitespace, the
 // encapsulated-header punctuation ':' and ',', '-' (checked for an END
-// marker first), and the two-byte escapes `\n` `\r` `\t` `\"` so
-// JSON-escaped single-line keys in structured logs are covered. With
-// limit >= 0, a plausible scan stops at the first token boundary at or past
-// limit (pemStopOpen), or at the end of the window inside a backslash run
-// (pemStopOpen with pos == len(window)).
-func (s *pemScanner) scan(window []byte, i, limit int) (pos int, stop pemStop) {
+// marker first), and the backslash escapes of a key in a string literal
+// (keyEscape: `\n` `\r` `\t` `\"`, `\/` and `\u002B` as PHP and .NET encode
+// '/' and '+', any backslash run) so JSON-escaped keys in structured logs
+// are covered. At the start of each line (after a raw or an escaped line
+// feed) it skips a hunk header line, the diff marker and the line's frame
+// (lineStart), and a quote closing a string literal's line (`" +`) is
+// taken with the line break after it. With limit >= 0, a plausible scan
+// stops at the first token boundary at or past limit (pemStopOpen), at
+// the end of the window inside a backslash run (pemStopOpen with pos ==
+// len(window)), or at a line start the window cuts.
+func (s *pemScanner) scan(window []byte, i, limit int, final bool) (pos int, stop pemStop) {
 	for {
 		if limit >= 0 && i >= limit && s.plausible {
 			return i, pemStopOpen
@@ -508,17 +638,42 @@ func (s *pemScanner) scan(window []byte, i, limit int) (pos int, stop pemStop) {
 			return i, pemStopWindow
 		}
 		c := window[i]
-		if pemBase64[c] {
-			// Consume the run at once. plausible only changes when a run
-			// closes, so the resume limit binds within the run exactly as
-			// it would byte by byte.
+		kind, e := escJunk, 0
+		if c == '\\' {
+			if i+1 < len(window) && window[i+1] == 'n' {
+				kind, e = escLF, i+2 // the common case, decoded inline
+			} else {
+				kind, e, _ = keyEscape(window, i)
+			}
+		}
+		if pemBase64[c] || kind == escB64 {
+			// Consume the run at once, with the escapes that stand for
+			// base64 bytes. plausible only changes when a run closes, so the
+			// resume limit binds within the run exactly as it would byte by
+			// byte.
 			stop := len(window)
 			if limit >= 0 && s.plausible && limit < stop {
 				stop = limit
 			}
-			j := i + 1
-			for j < stop && pemBase64[window[j]] {
-				j++
+			j := i
+			for j < stop {
+				// A range loop over the slice, free of bounds checks: body
+				// scans spend most of their time here.
+				n := 0
+				for _, c := range window[j:stop] {
+					if !pemBase64[c] {
+						break
+					}
+					n++
+				}
+				if j += n; j >= stop || window[j] != '\\' {
+					break
+				}
+				e := keyB64Escape(window, j)
+				if e == 0 {
+					break
+				}
+				j = e
 			}
 			s.runLen += j - i
 			i = j
@@ -526,37 +681,71 @@ func (s *pemScanner) scan(window []byte, i, limit int) (pos int, stop pemStop) {
 			s.snap = s.state()
 			continue
 		}
+		if kind == escNeed && limit >= 0 && s.plausible && bsRunEnd(window, i) == len(window) {
+			// A backslash run reaches the end of a non-final window: it may
+			// go on in the next one, as an escape that continues the run in
+			// progress or ends it.
+			return len(window), pemStopOpen
+		}
 		if !s.closeRun() {
 			return i, pemStopJunk // too many prose-like short runs: give up
 		}
 		switch c {
-		case ' ', '\t', '\r', '\n', ':', ',':
+		case ' ', '\t', '\r', ':', ',':
 			// Whitespace and encapsulated-header punctuation
 			// (Proc-Type: 4,ENCRYPTED / DEK-Info: ...).
 			i++
+		case '\n':
+			i++
+			if j, ok := s.plainLine(window, i); ok {
+				i = j
+				continue
+			}
+			next, cut := s.newLine(window, i, final)
+			if cut {
+				return s.cutStop(i)
+			}
+			i = next
 		case '\\':
 			// JSON-style escapes inside string-embedded keys. A run of
 			// backslashes is consumed as one unit so that multiply-escaped
 			// keys (JSON inside JSON, e.g. `\\n` or `\\\\n` in nested tool
 			// output) are covered as well as singly-escaped `\n`.
-			j := i
-			for j < len(window) && window[j] == '\\' {
-				j++
-			}
-			if j < len(window) {
-				switch window[j] {
-				case 'n', 'r', 't', '"':
-					i = j + 1
+			switch kind {
+			case escSep:
+				i = e
+			case escLF:
+				i = e
+				if j, ok := s.plainLine(window, i); ok {
+					i = j
 					continue
+				}
+				next, cut := s.newLine(window, i, final)
+				if cut {
+					return s.cutStop(i)
+				}
+				i = next
+			case escNeed:
+				// The window cuts the escape (a run that began before the
+				// block was plausible is not held at the resume limit).
+				if !final {
+					return s.cutStop(i)
+				}
+				return i, pemStopJunk
+			default:
+				return i, pemStopJunk
+			}
+		case '"', '\'':
+			// A quote closing a string literal's line: "...\n" + or "...",
+			// then the line break.
+			at, _, ok, need := keyQuoteTail(window, i)
+			if !ok {
+				if need && !final {
+					return s.cutStop(i)
 				}
 				return i, pemStopJunk
 			}
-			if limit >= 0 && s.plausible {
-				// The run reaches the end of a non-final window and may go
-				// on in the next.
-				return len(window), pemStopOpen
-			}
-			return i, pemStopJunk
+			i = at
 		case '-':
 			e, found := pemEndMarker(window, i)
 			if !found {
@@ -586,6 +775,16 @@ func (s *pemScanner) scan(window []byte, i, limit int) (pos int, stop pemStop) {
 			return i, pemStopJunk // byte that cannot be part of a PEM body
 		}
 	}
+}
+
+// cutStop reports how a scan stops at the start of a line, at, that the
+// window cuts before it is decided: open there for a plausible block in a
+// non-final window, which decides it again in the next, else as at junk.
+func (s *pemScanner) cutStop(at int) (int, pemStop) {
+	if s.plausible {
+		return at, pemStopOpen
+	}
+	return at, pemStopJunk
 }
 
 // PEMPrivateKey confirms a PEM-encapsulated private-key block within
@@ -623,15 +822,15 @@ func PEMPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (star
 		return 0, 0, 0, false, false
 	}
 
-	s := pemScanner{lastB64End: -1, nl: true}
-	if trigStart > 0 && startsLine(window, trigStart-1) {
-		if sides := diffSides(window[trigStart-1]); sides != 0 {
-			s.diff, s.sides = true, sides
-		}
+	s := pemScanner{lastB64End: -1, nl: true, frameEnd: -1}
+	if marker := keyTriggerMarker(window, trigStart); marker != 0 {
+		s.diff, s.sides = true, diffSides(marker)
 	}
 	body := labelEnd + len(pemDashes)
 	s.armor = true
-	s.escaped = pemHasAt(window, body, pemEscLF) || pemHasAt(window, body, []byte(`\r\n`))
+	if body < len(window) && window[body] == '\\' {
+		_, s.escaped, _ = keyBreak(window, body)
+	}
 	body, open = s.armorScan(window, body, final)
 	if open {
 		// Armor header lines run to the end of the window: a block that
@@ -645,7 +844,7 @@ func PEMPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (star
 	if !final && len(window)-pemResumeReserve > body {
 		limit = len(window) - pemResumeReserve
 	}
-	pos, stop := s.scan(window, body, limit)
+	pos, stop := s.scan(window, body, limit, final)
 	switch stop {
 	case pemStopEnd:
 		if !s.plausible {
@@ -695,6 +894,7 @@ func PEMPrivateKeyExtend(window []byte, state uint64, final bool) (end int, next
 	}
 	s := resumePEM(state)
 	i := 0
+	inArmor := s.armor
 	if s.armor {
 		pos, open := s.armorScan(window, 0, final)
 		if open {
@@ -707,24 +907,56 @@ func PEMPrivateKeyExtend(window []byte, state uint64, final bool) (end int, next
 		i = pos
 		s.snap = s.state()
 	}
-	if state&pemStateInRun != 0 {
-		for i < len(window) && window[i] == '\\' {
-			i++
-		}
-		if i == len(window) {
-			if final || i == 0 {
+	switch {
+	case state&pemStateInRun != 0:
+		// The previous window ended inside a backslash run: the escape it
+		// opens continues the run in progress or ends it.
+		j := bsRunEnd(window, 0)
+		if j == len(window) {
+			if final || j == 0 {
 				return 0, 0, false
 			}
-			return i, state, true
+			return j, state, true
 		}
-		switch window[i] {
-		case 'n', 'r', 't', '"':
-			i++
+		kind, e, _ := keyEscapeAfter(window, j)
+		switch kind {
+		case escB64:
+			s.runLen += e
+			i = e
+			s.lastB64End = i
+			s.snap = s.state()
+		case escSep, escLF:
+			if !s.closeRun() {
+				return 0, 0, false
+			}
+			i = e
+			if kind == escLF {
+				next, cut := s.lineStart(window, e, final)
+				if cut {
+					// Decide the line start in the next window, which
+					// starts there.
+					return e, s.state()&^(3<<pemStatePrevAt) | pemStateLineNL, true
+				}
+				i = next
+			}
+		case escNeed:
+			if final || j == 0 {
+				return 0, 0, false
+			}
+			return j, state, true
 		default:
 			return 0, 0, false
 		}
+	case s.nl && !inArmor:
+		// The window starts a line: a hunk header the previous window cut,
+		// or a line whose start it already read the same way.
+		next, cut := s.lineStart(window, 0, final)
+		if cut {
+			return 0, 0, false
+		}
+		i = next
 	}
-	pos, stop := s.scan(window, i, limit)
+	pos, stop := s.scan(window, i, limit, final)
 	switch stop {
 	case pemStopEnd:
 		return pos, 0, false
@@ -745,7 +977,7 @@ const (
 	ppkStateAllowOld  = 1 << 37
 	ppkStateAllowNew  = 1 << 38
 	ppkStateModeAt    = 39 // two bits: ppkModeLine...ppkModeStep
-	ppkStateSteppedAt = 41 // seven bits: lines stepped over since a count
+	ppkStateSteppedAt = 41 // seven bits: lines stepped over since a count, or overflow lines
 	ppkStateReachAt   = 48 // 16 bits: header reach left past the resume point
 )
 
@@ -791,7 +1023,7 @@ type ppkScanner struct {
 // stateAt packs the scanner for resuming at window offset pos in mode.
 func (s *ppkScanner) stateAt(pos int, mode uint64) uint64 {
 	st := uint64(s.need[ppkOld]) | uint64(s.need[ppkNew])<<ppkStateNeedBits | mode<<ppkStateModeAt |
-		uint64(min(s.stepped, ppkMaxStepLines))<<ppkStateSteppedAt
+		uint64(min(s.stepped, 0x7f))<<ppkStateSteppedAt
 	flag := func(on bool, bit uint64) {
 		if on {
 			st |= bit
@@ -888,9 +1120,10 @@ func (s *ppkScanner) count(sides [2]bool) {
 }
 
 // ppkCount parses the rest of a "Private-Lines:" header line from p:
-// optional spaces, 1-5 digits (not zero), optional spaces, optional '\r',
-// then '\n'. It returns the count and the offset of the next line.
-// incomplete reports that the window ended inside the line.
+// optional spaces, 1-5 digits (not zero), optional spaces, then the end
+// of the line (keyLineEnd: a raw or escaped line break, or the end of a
+// string literal's line). It returns the count and the offset of the next
+// line. incomplete reports that the window ended inside the line.
 func ppkCount(window []byte, p int) (n, next int, ok, incomplete bool) {
 	for p < len(window) && (window[p] == ' ' || window[p] == '\t') {
 		p++
@@ -915,16 +1148,14 @@ func ppkCount(window []byte, p int) (n, next int, ok, incomplete bool) {
 	for p < len(window) && (window[p] == ' ' || window[p] == '\t') {
 		p++
 	}
-	if p < len(window) && window[p] == '\r' {
-		p++
-	}
-	if p >= len(window) {
+	next, ok, need := keyLineEnd(window, p)
+	if need {
 		return 0, 0, false, true
 	}
-	if window[p] != '\n' {
+	if !ok {
 		return 0, 0, false, false
 	}
-	return n, p + 1, true, false
+	return n, next, true, false
 }
 
 // cutOpen reports where a scan resumes when the window cuts the line at
@@ -941,15 +1172,36 @@ func (s *ppkScanner) cutOpen(cut int, mode uint64) (resume int, state uint64, op
 	return 0, 0, false
 }
 
+// ppkContent returns the end of a body line's content from p: base64
+// bytes and the escapes that stand for them (`\/`, `\u002B`).
+func ppkContent(window []byte, p int) int {
+	for p < len(window) {
+		if pemBase64[window[p]] {
+			p++
+			continue
+		}
+		if e := keyB64Escape(window, p); e > 0 {
+			p = e
+			continue
+		}
+		break
+	}
+	return p
+}
+
 // lines scans body lines from p, which starts a line. Outside a diff a body
-// line is a base64 run then an optional '\r' and '\n'; in diff mode it is
-// a marker then the same. A line with base64 then junk still counts its
-// base64 prefix (fail-safe) and ends the section. When final is false and
-// the window cuts a line, the scan stops open: a counted line is split at
-// the window end, anything else resumes as cutOpen says.
+// line is a frame (keyFrameLen: an indentation, a quote or comment marker,
+// a line number), base64 content and a line end (keyLineEnd: a raw or
+// escaped line break, or the end of a string literal's line); in diff
+// mode a marker comes first. A line with base64 then junk still counts its
+// base64 prefix (fail-safe) and ends the section. In diff mode a hunk
+// header line between two hunks is stepped over; outside a diff, base64
+// lines past a count that is too low follow (overflow). When final is
+// false and the window cuts a line, the scan stops open: a counted line is
+// split at the window end, anything else resumes as cutOpen says.
 func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state uint64, open bool) {
 	for {
-		if s.complete(p) {
+		if s.complete(p) && !s.overflowing() {
 			return 0, 0, false
 		}
 		if p >= len(window) {
@@ -959,14 +1211,39 @@ func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state 
 			return s.cutOpen(p, ppkModeLine)
 		}
 		lineStart := p
-		sides := [2]bool{false, true}
-		if s.diff {
-			var ok bool
-			if sides, ok = ppkSides(window[p]); !ok {
+		if s.complete(p) {
+			next, ok, cut := s.overflow(window, p, final)
+			switch {
+			case cut:
+				return s.cutOpen(lineStart, ppkModeLine)
+			case !ok:
 				return 0, 0, false
 			}
-			p++
+			p = next
+			continue
 		}
+
+		l, ok, cut := s.head(window, p, final)
+		switch {
+		case cut:
+			return s.cutOpen(lineStart, ppkModeLine)
+		case !ok:
+			return 0, 0, false
+		case l.hunk >= 0:
+			// A hunk header between two hunks of a patch: a key's lines go
+			// on in the next hunk. It is stepped over, and masked between
+			// counted lines.
+			if lineStart >= s.reach && s.stepped >= ppkMaxStepLines {
+				return 0, 0, false
+			}
+			s.stepped++
+			p = l.hunk
+			continue
+		case s.diff && !l.marked:
+			return 0, 0, false
+		}
+		sides := l.sides
+		p = l.content
 
 		// In a diff, a followed version's header after the first: the other
 		// version of a changed key, after the old version's lines or the new
@@ -987,17 +1264,20 @@ func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state 
 			}
 		}
 
-		q := p
-		for q < len(window) && pemBase64[window[q]] {
-			q++
-		}
-		r := q
-		if r < len(window) && window[r] == '\r' {
-			r++
-		}
-		complete := r < len(window) && window[r] == '\n'
-		cut := !complete && r >= len(window) && !final
+		q := ppkContent(window, p)
+		next, complete, need := keyLineEnd(window, q)
+		cut = !complete && need && !final
 		if cut && q == p && s.counts(sides) {
+			if p < len(window) && window[p] == '\\' && bsRunEnd(window, p) == len(window) {
+				// A backslash run can encode a base64 slash beyond this
+				// window. Replaying the framed line would make no progress
+				// when the run itself is longer than a window. Count the
+				// potential body line and retain one slash for the escape.
+				if resume := len(window) - 1; resume > p {
+					s.count(sides)
+					return resume, s.stateAt(resume, ppkModeMid), true
+				}
+			}
 			// Nothing of the line's body is in view yet.
 			return s.cutOpen(lineStart, ppkModeLine)
 		}
@@ -1011,14 +1291,12 @@ func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state 
 			case complete:
 				s.stepped = 0
 				s.snap = s.stateAt(q, ppkModeEOL)
-				p = r + 1
+				p = next
 				continue
-			case cut && q == len(window):
-				// The window ends inside the line's base64: mask what is in
-				// view and go on inside the line.
-				return q, s.stateAt(q, ppkModeMid), true
 			case cut:
-				return q, s.stateAt(q, ppkModeEOL), true
+				// The window ends inside the line: mask what is in view
+				// and go on inside the line.
+				return q, s.stateAt(q, ppkModeMid), true
 			}
 			return 0, 0, false // junk after the base64 prefix, or end of input
 		}
@@ -1029,6 +1307,18 @@ func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state 
 		if !s.diff || s.counts(sides) {
 			return 0, 0, false
 		}
+		// A version whose section is complete while the other still holds
+		// the scan may go on past its count (overflow).
+		if s.overflowing() && s.doneOn(sides) {
+			next, ok, cut := s.overflowBody(window, lineStart, p, final)
+			if cut {
+				return s.cutOpen(lineStart, ppkModeLine)
+			}
+			if ok {
+				p = next
+				continue
+			}
+		}
 		// Stepping is bounded the same however the input is windowed: a
 		// stepped line may end at most ppkMaxStepLine bytes past where it
 		// starts or past the header reach, whichever is later, and past
@@ -1038,24 +1328,166 @@ func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state 
 			return 0, 0, false
 		}
 		limit := max(lineStart, s.reach) + ppkMaxStepLine
-		nl := bytes.IndexByte(window[p:], '\n')
-		if nl < 0 {
+		at, end, cutAt := keyNextBreak(window, p)
+		if at < 0 {
 			switch {
 			case final, len(window) > limit:
 				return 0, 0, false
-			case beyond || s.lastEnd > 0:
+			case beyond || s.lastEnd > 0 || cutAt <= lineStart:
 				return s.cutOpen(lineStart, ppkModeLine)
 			}
 			// Go on inside the line in the next window, with what is left
 			// of its allowance.
-			return len(window), s.stepStateAt(len(window), limit), true
+			return cutAt, s.stepStateAt(cutAt, limit), true
 		}
-		if p+nl > limit {
+		if at > limit {
 			return 0, 0, false
 		}
 		s.stepped++
-		p += nl + 1
+		p = end
 	}
+}
+
+// doneOn reports whether a followed version of sides has read its whole
+// count.
+func (s *ppkScanner) doneOn(sides [2]bool) bool {
+	for side, in := range sides {
+		if in && s.allow[side] && s.seen[side] && s.need[side] == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// overflowing reports whether a complete section may still take base64
+// lines past its count (see overflow).
+func (s *ppkScanner) overflowing() bool {
+	return (s.seen[ppkOld] || s.seen[ppkNew]) && s.stepped < ppkMaxOverflow
+}
+
+// overflow reads a line past the end of a section whose Private-Lines
+// count was too low: a line of base64 content (behind a frame and, in a
+// diff, a followed version's marker) is masked as a body line when it is
+// at least pemPlausibleRun bytes long, ends with '=' padding, or is
+// followed by the "Private-MAC:" line that ends a PPK file's private
+// section. At most ppkMaxOverflow such lines of at most ppkMaxStepLine
+// bytes each (line end included), counted in stepped: no line is stepped
+// over once the section is complete. In a well-formed file the
+// Private-MAC line follows the count at once, so nothing changes. It
+// returns the next line's start; cut reports that the window ends before
+// the line is decided.
+func (s *ppkScanner) overflow(window []byte, p int, final bool) (next int, ok, cut bool) {
+	l, ok, cut := s.head(window, p, final)
+	switch {
+	case cut:
+		return 0, false, true
+	case !ok:
+		return 0, false, false
+	case l.hunk >= 0:
+		// A hunk header: the key's lines may go on in the next hunk.
+		s.stepped++
+		return l.hunk, true, false
+	case s.diff && !(l.marked && (l.sides[ppkOld] && s.allow[ppkOld] || l.sides[ppkNew] && s.allow[ppkNew])):
+		return 0, false, false
+	}
+	return s.overflowBody(window, p, l.content, final)
+}
+
+// ppkLine is the start of a line as a PPK scan reads it.
+type ppkLine struct {
+	sides   [2]bool // the versions of its diff marker; outside a diff, the new one
+	marked  bool    // in diff mode, the line has a marker
+	content int     // where its content starts
+	hunk    int     // for a hunk header line, the start of the next line, else -1
+}
+
+// head reads the start of the line at p: in diff mode its marker and frame
+// in either order (keyLineMarker), else its frame (keyFrameLen), then a
+// hunk header behind them. cut reports that a non-final window ends before
+// that is decided; !ok, a hunk header at the end of input.
+func (s *ppkScanner) head(window []byte, p int, final bool) (l ppkLine, ok, cut bool) {
+	l = ppkLine{sides: [2]bool{false, true}, hunk: -1}
+	if s.diff {
+		m, c, need, spaced := keyLineMarker(window, p, len(window))
+		if need && !final {
+			return l, false, true
+		}
+		l.content = c
+		if m == 0 && spaced {
+			// A patch quoted with no space (">" + marker): the quote
+			// marker's conventional space is the context marker.
+			m = ' '
+		}
+		if m != 0 {
+			l.sides, _ = ppkSides(m)
+			l.marked = true
+		}
+	} else {
+		f, need := keyFrameLen(window, p, len(window))
+		if need && !final {
+			return l, false, true
+		}
+		l.content = p + f
+	}
+	if end, ok, need := keyHunkHeader(window, l.content, final); ok {
+		next, ok, need := keyLineEnd(window, end)
+		switch {
+		case need && !final:
+			return l, false, true
+		case !ok:
+			return l, false, false
+		}
+		l.hunk = next
+	} else if need {
+		return l, false, true
+	}
+	return l, true, false
+}
+
+// overflowBody is overflow from body, where the content of the line at
+// start begins.
+func (s *ppkScanner) overflowBody(window []byte, start, body int, final bool) (next int, ok, cut bool) {
+	q := ppkContent(window, body)
+	next, ok, need := keyLineEnd(window, q)
+	switch {
+	case ok && next-start > ppkMaxStepLine, !ok && len(window)-start > ppkMaxStepLine:
+		return 0, false, false // not a PPK body line
+	case need && !final:
+		return 0, false, true
+	case q == body:
+		return 0, false, false
+	case !ok && !(final && q == len(window)):
+		return 0, false, false // junk after base64: "Private-MAC" itself
+	}
+	if q-body < pemPlausibleRun && window[q-1] != '=' {
+		if !ok {
+			return 0, false, false
+		}
+		var c int
+		if s.diff {
+			_, c, need, _ = keyLineMarker(window, next, len(window))
+		} else {
+			var f int
+			f, need = keyFrameLen(window, next, len(window))
+			c = next + f
+		}
+		if need && !final {
+			return 0, false, true
+		}
+		if rest := window[c:]; !bytes.HasPrefix(rest, ppkPrivateMAC) {
+			if !final && len(rest) < len(ppkPrivateMAC) && bytes.HasPrefix(ppkPrivateMAC, rest) {
+				return 0, false, true
+			}
+			return 0, false, false
+		}
+	}
+	s.stepped++
+	s.lastEnd = q
+	if !ok {
+		return len(window), true, false // the end of input
+	}
+	s.snap = s.stateAt(q, ppkModeEOL)
+	return next, true, false
 }
 
 // stepStateAt packs the scanner for resuming at pos inside a stepped line
@@ -1067,39 +1499,61 @@ func (s *ppkScanner) stepStateAt(pos, limit int) uint64 {
 }
 
 // ppkTriggerSides reports the file versions a PPK trigger line belongs to:
-// its diff marker's, or both (any) when the trigger does not open a marked
-// line.
-func ppkTriggerSides(window []byte, trigStart int) (sides [2]bool, marked bool) {
-	if trigStart > 0 && startsLine(window, trigStart-1) {
-		if s, ok := ppkSides(window[trigStart-1]); ok {
-			return s, true
-		}
+// its diff marker's (keyTriggerPrefix: the marker may be followed by a
+// frame), or both (any) when the trigger does not open a marked line.
+// loose reports a marker followed by a frame, which may as well be an
+// indentation or a quote: such a trigger also takes an unmarked header,
+// as an unmarked trigger does.
+func ppkTriggerSides(window []byte, trigStart int) (sides [2]bool, marked, loose bool) {
+	if marker, framed := keyTriggerPrefix(window, trigStart); marker != 0 {
+		sides, _ := ppkSides(marker)
+		return sides, true, framed
 	}
-	return [2]bool{true, true}, false
+	return [2]bool{true, true}, false, false
 }
 
 // ppkFindHeader returns the offset of the first "Private-Lines:" at or
-// after from that starts a line, either directly or behind one unified
-// diff marker, and the marker (0 outside a diff). A header of a marked
-// trigger must open a line of a version the trigger belongs to.
-func ppkFindHeader(window []byte, from int, allow [2]bool, marked bool) (at int, marker byte, ok bool) {
+// after from that opens a line — directly, behind a frame (keyFrameLen:
+// an indentation, a quote or comment marker, a line number), or behind one
+// unified diff marker and a frame — after a raw or an escaped line feed,
+// and the marker (0 outside a diff). A header of a marked trigger must
+// open a line of a version the trigger belongs to.
+func ppkFindHeader(window []byte, from int, allow [2]bool, marked, loose bool) (at int, marker byte, ok bool) {
 	for from < len(window) {
 		rel := bytes.Index(window[from:], ppkPrivateLines)
 		if rel < 0 {
 			return 0, 0, false
 		}
 		at = from + rel
-		if !marked && at > 0 && startsLine(window, at) {
-			return at, 0, true
-		}
-		if at >= 2 && window[at-2] == '\n' {
-			if sides, ok := ppkSides(window[at-1]); ok && (sides[ppkOld] && allow[ppkOld] || sides[ppkNew] && allow[ppkNew]) {
-				return at, window[at-1], true
+		if ls, ok := keyLineStart(window, at, false); ok {
+			if m, ok := keyLinePrefix(window, ls, at); ok {
+				if m == 0 && (!marked || loose) {
+					return at, 0, true
+				}
+				if sides, ok := ppkSides(m); ok && (sides[ppkOld] && allow[ppkOld] || sides[ppkNew] && allow[ppkNew]) {
+					return at, m, true
+				}
 			}
 		}
 		from = at + 1
 	}
 	return 0, 0, false
+}
+
+// ppkQuotedPatch reports a header at at, behind a quote marker and its
+// conventional space (">" + " " + "Private-Lines:"), whose next line, at
+// next, puts a diff marker right after the quote marker (">-", ">+"): a
+// patch quoted with no space, in which that space is a context marker.
+func ppkQuotedPatch(window []byte, at, next int) bool {
+	ls, ok := keyLineStart(window, at, false)
+	if !ok {
+		return false
+	}
+	if m, c, _, spaced := keyLineMarker(window, ls, at); m != 0 || !spaced || c != at {
+		return false
+	}
+	m, _, _, spaced := keyLineMarker(window, next, len(window))
+	return (m == '+' || m == '-') && !spaced
 }
 
 // PuTTYPrivateKey confirms the private section of a PuTTY PPK file within
@@ -1143,8 +1597,8 @@ func PuTTYPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (st
 		return 0, 0, 0, false, false
 	}
 
-	allow, marked := ppkTriggerSides(window, trigStart)
-	secStart, marker, found := ppkFindHeader(window, trigEnd, allow, marked)
+	allow, marked, loose := ppkTriggerSides(window, trigStart)
+	secStart, marker, found := ppkFindHeader(window, trigEnd, allow, marked, loose)
 	if !found {
 		return 0, 0, 0, false, false
 	}
@@ -1154,6 +1608,9 @@ func PuTTYPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (st
 	n, p, ok, _ := ppkCount(window, secStart+len(ppkPrivateLines))
 	if !ok {
 		return 0, 0, 0, false, false
+	}
+	if marker == 0 && ppkQuotedPatch(window, secStart, p) {
+		marker = ' ' // a context line of a patch quoted with no space
 	}
 
 	s := ppkScanner{lastEnd: -1, reach: trigEnd + ppkHeaderReach}
@@ -1197,48 +1654,44 @@ func PuTTYPrivateKeyExtend(window []byte, state uint64, final bool) (end int, ne
 	s := resumePPK(state)
 	p := 0
 	switch state >> ppkStateModeAt & 3 {
-	case ppkModeMid:
-		for p < len(window) && pemBase64[window[p]] {
-			p++
-		}
+	case ppkModeMid, ppkModeEOL:
+		// Inside or at the end of a counted line's content (or an overflow
+		// line's): the rest of the content, then the line end.
+		p = ppkContent(window, 0)
 		if p > 0 {
 			s.lastEnd = p
 		}
-		if p == len(window) {
-			if final || p == 0 {
-				return p, 0, false
+		next, ok, need := keyLineEnd(window, p)
+		if !ok {
+			if need && !final {
+				if p == 0 {
+					// A line end longer than the window: a backslash run.
+					p = keyCutResume(window, 0)
+				}
+				if p > 0 {
+					return p, s.stateAt(p, ppkModeMid), true
+				}
 			}
-			return p, s.stateAt(p, ppkModeMid), true
-		}
-		fallthrough
-	case ppkModeEOL:
-		if p < len(window) && window[p] == '\r' {
-			p++
-		}
-		if p >= len(window) && !final && s.lastEnd > 0 {
-			return s.lastEnd, s.stateAt(s.lastEnd, ppkModeEOL), true
-		}
-		if p >= len(window) || window[p] != '\n' {
 			return max(s.lastEnd, 0), 0, false
 		}
-		p++
+		p = next
 		s.snap = s.stateAt(max(s.lastEnd, 0), ppkModeEOL)
 	case ppkModeStep:
 		// The reach field holds the stepped line's remaining allowance.
 		allowance := s.reach
 		s.reach = max(allowance-ppkMaxStepLine, 0)
-		nl := bytes.IndexByte(window, '\n')
-		if nl < 0 {
-			if final || len(window) > allowance || len(window) == 0 {
+		at, end, cutAt := keyNextBreak(window, 0)
+		if at < 0 {
+			if final || len(window) > allowance || cutAt == 0 {
 				return 0, 0, false
 			}
-			return len(window), s.stepStateAt(len(window), allowance), true
+			return cutAt, s.stepStateAt(cutAt, allowance), true
 		}
-		if nl > allowance {
+		if at > allowance {
 			return 0, 0, false
 		}
 		s.stepped++
-		p = nl + 1
+		p = end
 	}
 	resume, st, open := s.lines(window, p, final)
 	if open && resume > 0 {

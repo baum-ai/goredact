@@ -101,12 +101,12 @@ third row, and every reproduction command are in
 Output lags input by at most one rule-set window, regardless of how long the
 stream runs — the engine emits every byte it can prove is not part of a
 growing match. Measured on a trickle producer, first output byte arrives
-after 16,568 bytes of input on the balanced profile, and the bound is
+after 16,638 bytes of input on the balanced profile, and the bound is
 tunable by dropping the rules that need the longest lookahead:
 
 | Active rules | Lag bound |
 | --- | ---: |
-| balanced, all 66 | 16,568 B |
+| balanced, all 66 | 16,638 B |
 | minus `pem-private-key`, `putty-private-key` | 8,278 B |
 | minus also `jwt`, `supabase-service-role-key` | 4,393 B |
 | minus also `aws-bedrock-short-lived-api-key` | 774 B |

@@ -3,6 +3,76 @@
 All notable changes are documented here. This project follows semantic
 versioning.
 
+## Unreleased
+
+- **Fixed:** private keys in string literals escaped by PHP and .NET JSON
+  encoders. `json_encode` writes '/' as `\/` and System.Text.Json writes
+  '+' as `\u002B` (and '"' as `\u0022`); the key scans stopped at the first
+  such escape, so only the BEGIN line and the first base64 run were masked,
+  or nothing. Both rules now read `\/`, `\uXXXX` escapes of base64 bytes and
+  separators, and escaped line feeds after any backslash run (JSON inside
+  JSON).
+- **Fixed:** keys whose lines carry a prefix were not detected: quoted in
+  an email or Markdown (`> `, `> > `, `>> `), commented out (`# `, ` * `,
+  `; `), line-numbered as tools show a file (`     12→` from agent
+  transcripts, raw or as `\u2192`; `  12 | ` and `12|`; `12:` from
+  `grep -n` and `rg -n`; `12│` from bat; `12<tab>` from `cat -n`), or
+  concatenated from one string literal per line (`"...\n" +`,
+  `+ "...\n"`, `'...' +`, `"...\n" .`, `"...\n"..`, `" & vbLf & _`, in
+  Go, Java, JavaScript, Python, PHP, Lua and Visual Basic sources). At
+  the start of every line, after a raw or an escaped line feed, the scans
+  skip a line frame of up to 64 bytes (65 when it starts with a space) —
+  quote and comment markers (a `//` followed by base64 is key content), a
+  line number followed by optional spaces and a tab, an arrow, '|', ':'
+  or a box-drawing bar, an indentation, an opening quote, a leading `+`,
+  `&`, `.` or `..` (before a space, a quote or the line break), each raw
+  or escaped (`\u003e` as Go's encoding/json writes '>', `\/\/`) — and
+  take a quote closing a string literal's line with its line break. A
+  line number may change width without padding (` 9→` then `10→`). A diff
+  marker may precede the frame (`+> `, `+\t"` on a patch of Go source) or
+  follow it (`    18→-`, `> +`, `>-` on a numbered or quoted patch), so both
+  rules' lookbehind grows from 2 to 72 bytes to read the trigger line from
+  its start; a removed line's `-` before a frame is read too when the
+  trigger line holds more than a marker and a frame
+  (`-var key = "-----BEGIN`). RFC 4880 armor header lines may carry any
+  diff marker, list bullet or none, whatever the BEGIN line starts with.
+  `// ` comments and `cat -n` line numbers were already masked.
+- **Fixed:** PuTTY keys JSON-escaped (lines broken by `\n`) or indented by
+  two or more spaces (a YAML block) were never detected. The
+  `Private-Lines:` header and the body lines are read with the same
+  frames, escapes and line ends as PEM lines; a header indented by spaces
+  reads as a context line, so its body lines are counted as context.
+- **Fixed:** a key spanning two hunks of a patch leaked from the second
+  hunk on: the scans stopped at the `@@ -a,b +c,d @@` header. A hunk header
+  inside a key — also behind a frame or a marker (`    40→@@ -40,7`,
+  `> @@`, `+@@`) — is now skipped and masked with the key (git may put a
+  key line in its section heading), and the key is followed into the next
+  hunk, for PEM and PuTTY keys. A PuTTY key rotated in a numbered or
+  quoted patch is read with each line's marker after its frame.
+- **Fixed:** base64 lines past a PuTTY `Private-Lines` count that is too
+  low leaked. Up to 100 further lines of at most 512 bytes each, line end
+  included, are masked up
+  to the `Private-MAC:` line: a line of 16 or more base64 bytes, one that
+  ends with '=' padding, or a shorter one directly before the MAC line,
+  also in a patch (on a version whose count is done, past hunk headers).
+  A well-formed file is masked as before.
+- The rule-set version changes. The balanced profile's streaming lag
+  bound grows by 70 bytes (the key rules' lookbehind), to 16,638 bytes,
+  and the smallest accepted `Config.ChunkSize` with both key rules active
+  from 32,812 to 32,952 bytes: `New` now rejects a `ChunkSize` from 32,812
+  to 32,951 that v0.3.0 accepted.
+- Internal: new fuzz target `FuzzEngineKeyShapes` runs the block checks on
+  key-shaped text behind line prefixes, concatenated, JSON-escaped and
+  split by hunk headers; new synthetic fixtures for quoted, escaped,
+  concatenated and indented keys. `BenchmarkRedactLongKeyBlocks` runs
+  about 4% slower (about 600 MB/s); the quiet and noisy benchmarks and
+  `make bench-ci` are unchanged. In the worst cases, floods of BEGIN lines
+  each starting a scan of its 16 KiB window, a bare flood drops from about
+  7.0 to about 4.9 MB/s, and a flood of short keys behind line numbers and
+  diff markers (`    12→+> -----BEGIN …`, which v0.3.0 did not scan) runs
+  at about 2.3 MB/s. Both stay linear: at most one 16 KiB window of
+  scanning per trigger, as in v0.3.0.
+
 ## v0.3.0 — 2026-10-20
 
 - **Fixed:** private keys are masked to their end, however long. The
