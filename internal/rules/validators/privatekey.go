@@ -1268,6 +1268,16 @@ func (s *ppkScanner) lines(window []byte, p int, final bool) (resume int, state 
 		next, complete, need := keyLineEnd(window, q)
 		cut = !complete && need && !final
 		if cut && q == p && s.counts(sides) {
+			if p < len(window) && window[p] == '\\' && bsRunEnd(window, p) == len(window) {
+				// A backslash run can encode a base64 slash beyond this
+				// window. Replaying the framed line would make no progress
+				// when the run itself is longer than a window. Count the
+				// potential body line and retain one slash for the escape.
+				if resume := len(window) - 1; resume > p {
+					s.count(sides)
+					return resume, s.stateAt(resume, ppkModeMid), true
+				}
+			}
 			// Nothing of the line's body is in view yet.
 			return s.cutOpen(lineStart, ppkModeLine)
 		}

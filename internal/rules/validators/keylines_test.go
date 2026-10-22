@@ -397,6 +397,25 @@ func TestPPKChainStepsBackslashRunLine(t *testing.T) {
 	}
 }
 
+// A framed context line can start with an escaped base64 slash whose
+// backslash run spans several windows, before any body byte is visible.
+func TestPPKChainBodyStartsWithLongEscape(t *testing.T) {
+	for _, n := range []int{1400, 2500, 4000} {
+		text := []byte(ppkTrig + "2:\n Private-Lines:1\n+" + pemB64LineA[:16] + "\n" +
+			strings.Repeat(" ", 65) + strings.Repeat(`\`, n) + "/")
+		wantS, wantE, ok := wholeSpan(ppkBlock, text, 0)
+		if !ok || wantE != len(text) {
+			t.Fatalf("run %d: whole [%d,%d) ok=%v", n, wantS, wantE, ok)
+		}
+		for la := pemArmorWindowMin; la < pemArmorWindowMin+200; la++ {
+			start, end, ok, _, _ := chainSpan(ppkBlock, text, 0, la)
+			if !ok || start != wantS || end < wantE {
+				t.Fatalf("run %d, lookahead %d: chained [%d,%d) ok=%v, whole [%d,%d)", n, la, start, end, ok, wantS, wantE)
+			}
+		}
+	}
+}
+
 // TestPEMChainArmorQuoteBeforeBackslashRun: an escaped armor header line
 // whose value ends in a quote, spaces and a backslash run longer than a
 // window is decided the same in every window as in one scan of the whole
