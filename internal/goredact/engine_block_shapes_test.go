@@ -635,3 +635,29 @@ func TestEngineFrameBounds(t *testing.T) {
 	pad := strings.Repeat(" ", 64)
 	assertBlockMasked(t, "key := \"\" +\n"+shapeLines(pem, func(_ int, l string) string { return pad + "\"" + l + `\n" +` })+"\n\"\"\n", body)
 }
+
+// The longest supported frame must retain its diff marker even when the
+// preceding line break is escaped and the validator window starts mid-input.
+func TestEngineKeyPrefixLookbehind(t *testing.T) {
+	body := blockTestLines(93, 3)
+	for _, sep := range []string{"\n", `\n`, `\u000A`, `\\u000a`} {
+		for _, width := range []int{64, 65} {
+			t.Run(fmt.Sprintf("%q/frame%d", sep, width), func(t *testing.T) {
+				frame := strings.Repeat(" ", width)
+				lines := []string{"preamble", "+" + frame + "-----BEGIN RSA PRIVATE KEY-----", "+" + frame + body[0],
+					"-" + frame + "-----END RSA PRIVATE KEY-----", "+" + frame + body[1], "+" + frame + body[2],
+					"+" + frame + "-----END RSA PRIVATE KEY-----"}
+				assertBlockMasked(t, strings.Join(lines, sep), body)
+			})
+		}
+	}
+}
+
+func TestEnginePuTTYUnicodeLineBreaks(t *testing.T) {
+	body := blockTestLines(94, 2)
+	for _, n := range []int{1, 2, 4, 64} {
+		sep := strings.Repeat(`\`, n) + "u000A"
+		input := strings.Join([]string{"preamble", "PuTTY-User-Key-File-3: ssh-rsa", "Private-Lines: 2", body[0], body[1], "Private-MAC: 00"}, sep)
+		t.Run(fmt.Sprint(n), func(t *testing.T) { assertBlockMasked(t, input, body) })
+	}
+}

@@ -57,7 +57,7 @@ each raw or escaped); with a quote closing a concatenated string line
 is masked with the key (git may give it a key line as its section
 heading). A line's diff marker comes before its frame (`+> `) or after the
 frame's line number or quote marker (`    18→-`, `> +`). Their lookbehind
-(67 bytes) holds the trigger line's frame, its diff marker and the line
+(72 bytes) holds the trigger line's frame, its diff marker and the line
 break before them, so a marked line is recognised behind a frame
 (`+> -----BEGIN`). A PuTTY section whose `Private-Lines` count is too low
 takes up to 100 further base64 lines up to its `Private-MAC` line.

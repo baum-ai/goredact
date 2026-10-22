@@ -12,7 +12,7 @@
       "validator": "PEMPrivateKey",
       "minProfile": "fast",
       "confidence": "high",
-      "maxLookbehind": 67,
+      "maxLookbehind": 72,
       "maxLookahead": 16384,
       "provenance": {
         "source": "https://datatracker.ietf.org/doc/html/rfc7468",
@@ -56,7 +56,7 @@
       "validator": "PuTTYPrivateKey",
       "minProfile": "fast",
       "confidence": "high",
-      "maxLookbehind": 67,
+      "maxLookbehind": 72,
       "maxLookahead": 16384,
       "provenance": {
         "source": "https://tartarus.org/~simon/putty-snapshots/htmldoc/AppendixC.html",

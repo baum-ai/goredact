@@ -55,8 +55,9 @@ an indentation, an opening quote), the end of a concatenated string line
 and a hunk header between two hunks. `internal/rules/validators/keylines.go`
 holds those shapes for the private-key rules. A frame may sit between a
 line's diff marker and its trigger, so those rules declare
-`maxLookbehind: 67` (`keyLookbehind`: the marker, a 64-byte frame and the
-line break before them; `TestKeyLookbehindMatchesSpec`), and the start of
+`maxLookbehind: 72` (`keyLookbehind`: the marker, a frame of up to 65
+bytes and a six-byte escaped line break before them;
+`TestKeyLookbehindMatchesSpec`), and the start of
 their window is the start of a line only when it holds fewer bytes before
 the trigger.
 

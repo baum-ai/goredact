@@ -22,8 +22,9 @@ const (
 
 	// keyLookbehind is the key rules' lookbehind: a trigger line's frame,
 	// its diff marker and the (possibly escaped) line break before them
-	// (TestKeyLookbehindMatchesSpec).
-	keyLookbehind = keyFrameMax + 3
+	// (TestKeyLookbehindMatchesSpec). A space-led frame can hold one extra
+	// byte; allow a diff marker and the six-byte Unicode line-feed escape.
+	keyLookbehind = keyFrameMax + 2 + 6
 
 	// keyTailMax bounds the bytes between a closing quote and the line
 	// break of a concatenated string line (`" +`, `",`, `");`,
@@ -522,14 +523,14 @@ var keyContentStart = func() (t [256]bool) {
 }()
 
 // keyLineStart returns the start of the line holding at when it begins at
-// most keyFrameMax+1 bytes before at: just past a raw or escaped line
+// most keyFrameMax+2 bytes before at: just past a raw or escaped line
 // feed, or at the start of the window when fromInput reports that the
 // window starts at the start of input.
 func keyLineStart(w []byte, at int, fromInput bool) (int, bool) {
 	if at < 0 || at > len(w) {
 		return 0, false
 	}
-	lo := max(0, at-keyFrameMax-2)
+	lo := max(0, at-keyFrameMax-3)
 	for k := at - 1; k >= lo; k-- {
 		if keyAfterBreak(w, k+1) {
 			return k + 1, true

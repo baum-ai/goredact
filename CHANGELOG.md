@@ -31,7 +31,7 @@ versioning.
   line number may change width without padding (` 9→` then `10→`). A diff
   marker may precede the frame (`+> `, `+\t"` on a patch of Go source) or
   follow it (`    18→-`, `> +`, `>-` on a numbered or quoted patch), so both
-  rules' lookbehind grows from 2 to 67 bytes to read the trigger line from
+  rules' lookbehind grows from 2 to 72 bytes to read the trigger line from
   its start; a removed line's `-` before a frame is read too when the
   trigger line holds more than a marker and a frame
   (`-var key = "-----BEGIN`). RFC 4880 armor header lines may carry any
@@ -57,10 +57,10 @@ versioning.
   also in a patch (on a version whose count is done, past hunk headers).
   A well-formed file is masked as before.
 - The rule-set version changes. The balanced profile's streaming lag
-  bound grows by 65 bytes (the key rules' lookbehind), to 16,633 bytes,
+  bound grows by 70 bytes (the key rules' lookbehind), to 16,638 bytes,
   and the smallest accepted `Config.ChunkSize` with both key rules active
-  from 32,812 to 32,942 bytes: `New` now rejects a `ChunkSize` from 32,812
-  to 32,941 that v0.3.0 accepted.
+  from 32,812 to 32,952 bytes: `New` now rejects a `ChunkSize` from 32,812
+  to 32,951 that v0.3.0 accepted.
 - Internal: new fuzz target `FuzzEngineKeyShapes` runs the block checks on
   key-shaped text behind line prefixes, concatenated, JSON-escaped and
   split by hunk headers; new synthetic fixtures for quoted, escaped,
