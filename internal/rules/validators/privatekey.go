@@ -280,13 +280,23 @@ func pemArmorBreak(window []byte, pos int, escaped bool) (end int, ok, need bool
 // ends at a bare '"' and may hold escapes (`\"`, `\\`, `\t`, `\/`, `\u0022`).
 // It returns the offset of the line break ending the header line. cut
 // reports that a non-final window ends before the line is decided.
-func pemArmorLine(window []byte, end int, escaped, final bool) (lineEnd int, ok, cut bool) {
+func pemArmorLine(window []byte, end int, escaped, final bool, litLen int, litLast byte) (lineEnd int, ok, cut bool) {
 	p, ok, need := pemArmorBreak(window, end, escaped)
 	if !ok {
 		return 0, false, need && !final
 	}
 	if p >= len(window) {
 		return 0, false, !final
+	}
+	if litLen > 0 {
+		// A log prefix the BEGIN line had (keyTriggerLiteral).
+		c, ok, need := keyLiteralSkip(window, p, litLen, litLast, false)
+		if need && !final {
+			return 0, false, true
+		}
+		if ok {
+			return pemArmorHeader(window, c, escaped, final)
+		}
 	}
 	// Any diff marker, or none: a header line is masked with the key
 	// whichever file version it belongs to, and the BEGIN line's first
@@ -300,7 +310,12 @@ func pemArmorLine(window []byte, end int, escaped, final bool) (lineEnd int, ok,
 	if need && !final {
 		return 0, false, true
 	}
-	p += f
+	return pemArmorHeader(window, p+f, escaped, final)
+}
+
+// pemArmorHeader parses the "Key: Value" of an armor header line from p,
+// past its prefix (see pemArmorLine).
+func pemArmorHeader(window []byte, p int, escaped, final bool) (lineEnd int, ok, cut bool) {
 	key := p
 	for p < len(window) && p-key < pemLabelMax && (isASCIILetter(window[p]) || isDigit(window[p]) || window[p] == '-' && p > key) {
 		p++
@@ -375,7 +390,7 @@ func pemArmorLine(window []byte, end int, escaped, final bool) (lineEnd int, ok,
 // last header line read as the resume point.
 func (s *pemScanner) armorScan(window []byte, end int, final bool) (pos int, open bool) {
 	for s.armorLines < pemArmorLines {
-		next, ok, cut := pemArmorLine(window, end, s.escaped, final)
+		next, ok, cut := pemArmorLine(window, end, s.escaped, final, s.litLen, s.litLast)
 		if cut {
 			return end, true
 		}
@@ -409,6 +424,8 @@ const (
 	pemStateArmor     = 1 << 23 // armor headers are still being skipped
 	pemStateArmorAt   = 24      // six bits: armor header lines skipped so far
 	pemStateEscaped   = 1 << 30 // the block's lines break on escaped `\n`
+	pemStateLitAt     = 32      // seven bits: the literal prefix length (keyTriggerLiteral)
+	pemStateLitLastAt = 39      // eight bits: the literal prefix's last byte
 	pemStateArmorMask = pemStateArmor | 0x3f<<pemStateArmorAt | pemStateEscaped
 )
 
@@ -431,12 +448,15 @@ type pemScanner struct {
 	snap       uint64 // the state at lastB64End, for resuming there
 	frameEnd   int    // where the current line's diff marker and frame end, or -1
 	frameSides uint8  // with diff, the versions of that line's marker
+	litLen     int    // the trigger line's literal prefix length, or 0 (keyTriggerLiteral)
+	litLast    byte   // its last byte
 }
 
 // state packs what a resumed scan needs. runLen only matters up to
 // pemPlausibleRun and shortRuns never exceeds pemMaxShortRuns+1.
 func (s *pemScanner) state() uint64 {
-	st := uint64(min(s.runLen, pemPlausibleRun)) | uint64(s.shortRuns)<<8 | uint64(s.sides)<<16
+	st := uint64(min(s.runLen, pemPlausibleRun)) | uint64(s.shortRuns)<<8 | uint64(s.sides)<<16 |
+		uint64(s.litLen)<<pemStateLitAt | uint64(s.litLast)<<pemStateLitLastAt
 	if s.diff {
 		st |= pemStateDiff
 	}
@@ -467,6 +487,8 @@ func resumePEM(state uint64) pemScanner {
 		snap:       state &^ (pemStateInRun | pemStateLineNL | 3<<pemStatePrevAt),
 		frameEnd:   0,
 		frameSides: uint8(state>>pemStatePrevAt) & (diffOld | diffNew),
+		litLen:     min(int(state>>pemStateLitAt&0x7f), keyFrameMax),
+		litLast:    byte(state >> pemStateLitLastAt),
 	}
 }
 
@@ -498,7 +520,7 @@ func (s *pemScanner) markerBefore(window []byte, i int) uint8 {
 // that opens with a letter or '=', behind a diff marker in diff mode.
 func (s *pemScanner) plainLine(window []byte, i int) (next int, ok bool) {
 	if !s.diff {
-		return i, i < len(window) && keyLetterLine[window[i]]
+		return i, s.litLen == 0 && i < len(window) && keyLetterLine[window[i]]
 	}
 	if i+1 < len(window) && keyLetterLine[window[i+1]] {
 		if sides := diffSides(window[i]); sides != 0 {
@@ -514,7 +536,7 @@ func (s *pemScanner) plainLine(window []byte, i int) (next int, ok bool) {
 // mode: they hold no hunk header, END marker or frame.
 func (s *pemScanner) newLine(window []byte, i int, final bool) (next int, cut bool) {
 	if !s.diff {
-		if keyPlainLine(window, i) {
+		if s.litLen == 0 && keyPlainLine(window, i) {
 			return i, false
 		}
 	} else if i < len(window) {
@@ -538,6 +560,25 @@ func (s *pemScanner) lineStart(window []byte, i int, final bool) (next int, cut 
 	framed := false
 	if i < len(window) {
 		if _, isEnd := pemEndMarker(window, i); !isEnd {
+			if s.litLen > 0 {
+				// A log prefix the trigger line had (keyTriggerLiteral).
+				c, ok, need := keyLiteralSkip(window, i, s.litLen, s.litLast, true)
+				if need && !final {
+					return start, true
+				}
+				if ok {
+					_, isEnd := pemEndMarker(window, c)
+					if !isEnd && window[c] == '-' && !final && len(window)-c < pemResumeReserve {
+						// An END marker behind the prefix may be cut: decide
+						// it in the next window, which starts at this line.
+						return start, true
+					}
+					if isEnd || window[c] != '-' {
+						s.frameEnd, s.frameSides = c, 0
+						return c, false
+					}
+				}
+			}
 			switch {
 			case s.diff:
 				m, c, need, _ := keyLineMarker(window, i, len(window))
@@ -825,6 +866,8 @@ func PEMPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (star
 	s := pemScanner{lastB64End: -1, nl: true, frameEnd: -1}
 	if marker := keyTriggerMarker(window, trigStart); marker != 0 {
 		s.diff, s.sides = true, diffSides(marker)
+	} else {
+		s.litLen, s.litLast = keyTriggerLiteral(window, trigStart)
 	}
 	body := labelEnd + len(pemDashes)
 	s.armor = true
@@ -979,6 +1022,11 @@ const (
 	ppkStateModeAt    = 39 // two bits: ppkModeLine...ppkModeStep
 	ppkStateSteppedAt = 41 // seven bits: lines stepped over since a count, or overflow lines
 	ppkStateReachAt   = 48 // 16 bits: header reach left past the resume point
+
+	// Outside a diff the old version needs no lines, so its count's bits
+	// hold the literal prefix (keyTriggerLiteral): seven bits of length,
+	// then eight of its last byte.
+	ppkStateLitLastAt = 7
 )
 
 // Where a resumed PPK scan stands at offset 0 of its window.
@@ -1018,6 +1066,8 @@ type ppkScanner struct {
 	lastEnd   int    // one past the last body base64 byte, or -1
 	snap      uint64 // the state at lastEnd, for resuming there
 	stepped   int    // lines stepped over since the last counted one
+	litLen    int    // outside a diff, the trigger line's literal prefix length, or 0
+	litLast   byte   // its last byte
 }
 
 // stateAt packs the scanner for resuming at window offset pos in mode.
@@ -1034,12 +1084,25 @@ func (s *ppkScanner) stateAt(pos int, mode uint64) uint64 {
 	flag(s.diff, ppkStateDiff)
 	flag(s.allow[ppkOld], ppkStateAllowOld)
 	flag(s.allow[ppkNew], ppkStateAllowNew)
+	if !s.diff {
+		st |= uint64(s.litLen) | uint64(s.litLast)<<ppkStateLitLastAt
+	}
 	return st | uint64(min(max(s.reach-pos, 0), 0xffff))<<ppkStateReachAt
 }
 
 // resumePPK rebuilds a scanner for an open block from state. An open block
 // was confirmed, so it is plausible.
 func resumePPK(state uint64) ppkScanner {
+	if state&ppkStateDiff == 0 {
+		s := resumePPKCounts(state &^ (1<<ppkStateNeedBits - 1))
+		s.litLen = min(int(state&0x7f), keyFrameMax)
+		s.litLast = byte(state >> ppkStateLitLastAt)
+		return s
+	}
+	return resumePPKCounts(state)
+}
+
+func resumePPKCounts(state uint64) ppkScanner {
 	return ppkScanner{
 		need: [2]int{
 			min(int(state&(1<<ppkStateNeedBits-1)), ppkMaxCount),
@@ -1423,6 +1486,17 @@ func (s *ppkScanner) head(window []byte, p int, final bool) (l ppkLine, ok, cut 
 			l.marked = true
 		}
 	} else {
+		if s.litLen > 0 {
+			// A log prefix the trigger line had (keyTriggerLiteral).
+			c, ok, need := keyLiteralSkip(window, p, s.litLen, s.litLast, false)
+			if need && !final {
+				return l, false, true
+			}
+			if ok {
+				l.content = c
+				return l, true, false
+			}
+		}
 		f, need := keyFrameLen(window, p, len(window))
 		if need && !final {
 			return l, false, true
@@ -1470,6 +1544,15 @@ func (s *ppkScanner) overflowBody(window []byte, start, body int, final bool) (n
 			var f int
 			f, need = keyFrameLen(window, next, len(window))
 			c = next + f
+			if s.litLen > 0 {
+				lc, ok, lneed := keyLiteralSkip(window, next, s.litLen, s.litLast, false)
+				switch {
+				case ok:
+					c, need = lc, false
+				case lneed:
+					need = true
+				}
+			}
 		}
 		if need && !final {
 			return 0, false, true
@@ -1518,13 +1601,22 @@ func ppkTriggerSides(window []byte, trigStart int) (sides [2]bool, marked, loose
 // unified diff marker and a frame — after a raw or an escaped line feed,
 // and the marker (0 outside a diff). A header of a marked trigger must
 // open a line of a version the trigger belongs to.
-func ppkFindHeader(window []byte, from int, allow [2]bool, marked, loose bool) (at int, marker byte, ok bool) {
+//
+// With litLen set (an unmarked trigger behind a log prefix,
+// keyTriggerLiteral), the header may also open a line behind a literal
+// prefix of that length (keyLiteralSkip).
+func ppkFindHeader(window []byte, from int, allow [2]bool, marked, loose bool, litLen int, litLast byte) (at int, marker byte, ok bool) {
 	for from < len(window) {
 		rel := bytes.Index(window[from:], ppkPrivateLines)
 		if rel < 0 {
 			return 0, 0, false
 		}
 		at = from + rel
+		if ls := at - litLen; litLen > 0 && ls > 0 && keyAfterBreak(window, ls) {
+			if c, ok, _ := keyLiteralSkip(window, ls, litLen, litLast, false); ok && c == at {
+				return at, 0, true
+			}
+		}
 		if ls, ok := keyLineStart(window, at, false); ok {
 			if m, ok := keyLinePrefix(window, ls, at); ok {
 				if m == 0 && (!marked || loose) {
@@ -1598,7 +1690,12 @@ func PuTTYPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (st
 	}
 
 	allow, marked, loose := ppkTriggerSides(window, trigStart)
-	secStart, marker, found := ppkFindHeader(window, trigEnd, allow, marked, loose)
+	var litLen int
+	var litLast byte
+	if !marked {
+		litLen, litLast = keyTriggerLiteral(window, trigStart)
+	}
+	secStart, marker, found := ppkFindHeader(window, trigEnd, allow, marked, loose, litLen, litLast)
 	if !found {
 		return 0, 0, 0, false, false
 	}
@@ -1620,6 +1717,7 @@ func PuTTYPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (st
 		sides, _ = ppkSides(marker)
 	} else {
 		s.allow = [2]bool{false, true}
+		s.litLen, s.litLast = litLen, litLast
 	}
 	s.header(sides, n)
 	// Where the section resumes if the window cuts its first body line

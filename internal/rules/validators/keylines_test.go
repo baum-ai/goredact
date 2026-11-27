@@ -437,3 +437,57 @@ func TestPEMChainArmorQuoteBeforeBackslashRun(t *testing.T) {
 		}
 	}
 }
+
+func TestKeyTriggerLiteral(t *testing.T) {
+	for _, tc := range []struct {
+		line string // "^" marks the trigger
+		n    int
+		last byte
+	}{
+		{"api-1  | ^-----BEGIN", 9, ' '},
+		{"x\n[pod/web/app] ^-----BEGIN", 14, ' '},
+		{"Oct 21 12:00:00 host app[123]: ^-----BEGIN", 31, ' '},
+		{"> ^-----BEGIN", 0, 0},                          // a frame
+		{"^-----BEGIN", 0, 0},                            // no prefix
+		{"key=abc^-----BEGIN", 0, 0},                     // ends with a base64 byte
+		{`a\"b ^-----BEGIN`, 0, 0},                       // an escape
+		{strings.Repeat("x", 64) + " ^-----BEGIN", 0, 0}, // longer than keyFrameMax
+		{strings.Repeat("x", 63) + " ^-----BEGIN", 64, ' '},
+	} {
+		at := strings.IndexByte(tc.line, '^')
+		w := []byte(tc.line[:at] + tc.line[at+1:])
+		n, last := keyTriggerLiteral(w, at)
+		if n != tc.n || last != tc.last {
+			t.Errorf("%q: got (%d,%q), want (%d,%q)", tc.line, n, last, tc.n, tc.last)
+		}
+	}
+}
+
+func TestKeyLiteralSkip(t *testing.T) {
+	for _, tc := range []struct {
+		w        string
+		n        int
+		end      bool
+		content  int
+		ok, need bool
+	}{
+		{"api-1  | MIIE", 9, false, 9, true, false},
+		{"api-1  | \nx", 9, false, 9, true, false}, // an empty line
+		{"api-1  | \r\nx", 9, false, 9, true, false},
+		{"api-1  | -----END", 9, true, 9, true, false},
+		{"api-1  | -----END", 9, false, 0, false, false}, // '-' only with end
+		{"api-1  |xMIIE", 9, false, 0, false, false},     // another last byte
+		{"ab\ncdefg| MIIE", 9, false, 0, false, false},   // a line break inside
+		{`ab\ncdefg MIIE`, 9, false, 0, false, false},    // an escape inside
+		{"api-1  | (x", 9, false, 0, false, false},       // not key content
+		{"api-1  | ", 9, false, 0, false, true},          // cut before the content
+		{"api-1  | \r", 9, false, 0, false, true},
+		{"api-1", 9, false, 0, false, true},
+		{"a\nb", 9, false, 0, false, false}, // a break in view decides
+	} {
+		c, ok, need := keyLiteralSkip([]byte(tc.w), 0, tc.n, ' ', tc.end)
+		if c != tc.content || ok != tc.ok || need != tc.need {
+			t.Errorf("%q: got (%d,%v,%v), want (%d,%v,%v)", tc.w, c, ok, need, tc.content, tc.ok, tc.need)
+		}
+	}
+}

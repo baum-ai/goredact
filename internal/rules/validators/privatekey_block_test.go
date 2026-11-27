@@ -324,56 +324,84 @@ func FuzzBlockChainMatchesWholeScan(f *testing.F) {
 	f.Add([]byte(`3: ssh-rsa\n  Private-Lines: 1\n  `+pemB64LineA+`\n  `+pemB64LineB+`\n  Private-MAC: 00\n`), uint8(1), uint16(220))
 	f.Add([]byte("2: ssh-rsa\n+Private-Lines: 3\n+"+pemB64LineA+"\n@@ -9,3 +9,3 @@\n+"+pemB64LineB+"\n+"+pemB64LineC+"\n"), uint8(1), uint16(240))
 	f.Fuzz(func(t *testing.T, data []byte, which uint8, la uint16) {
-		if len(data) > 8<<10 {
-			data = data[:8<<10]
-		}
-		fn := pemBlock
-		if which%2 == 1 {
-			fn = ppkBlock
-		}
-		text := append([]byte(fn.trigger), data...)
-		// Windows hold at least one armor header line, as the engine's do
-		// (blockMinStep).
-		lookahead := pemArmorWindowMin + int(la)%1024
-
-		start, end, ok, opened, _ := chainSpan(fn, text, 0, lookahead)
-		var wantS, wantE int
-		var wantOK bool
-		if opened {
-			wantS, wantE, wantOK = wholeSpan(fn, text, 0)
-			if ok && !wantOK && fn.name == "pem" {
-				// Armor header lines ran to the end of the trigger window:
-				// the chain takes the block as a key (fail-safe) where one
-				// scan of the whole input, seeing no body, does not.
-				wEnd := min(len(fn.trigger)+lookahead, len(text))
-				if _, _, st, _, _ := fn.begin(text[:wEnd], 0, len(fn.trigger), false); st&pemStateArmor == 0 {
-					t.Fatalf("pem lookahead %d: chained (%d,%d) confirmed a block the whole scan rejects", lookahead, start, end)
-				}
-				return
-			}
-		} else {
-			wEnd := min(len(fn.trigger)+lookahead, len(text))
-			wantS, wantE, wantOK = wholeSpan(fn, text[:wEnd], 0)
-		}
-		longest := 0
-		for _, line := range bytes.Split(text, []byte("\n")) {
-			longest = max(longest, len(line))
-		}
-		over := end - wantE
-		// PPK lines stepped over while a header may still come (within
-		// ppkHeaderReach of the trigger), and past it up to ppkMaxStepLines
-		// of at most ppkMaxStepLine bytes, are masked across windows.
-		extraOK := end <= max(wantE, len(fn.trigger)+ppkHeaderReach)+lookahead+longest+ppkMaxStepLines*(ppkMaxStepLine+1)
-		if fn.name == "pem" && over > 0 {
-			extraOK = pemNoBody(text, wantE, end)
-		}
-		if ok != wantOK || ok && (start != wantS || over < 0 || !opened && over != 0 || !extraOK) {
-			t.Fatalf("%s lookahead %d opened=%v: chained (%d,%d,%v), want (%d,%d,%v)", fn.name, lookahead, opened, start, end, ok, wantS, wantE, wantOK)
-		}
-		if ok && (start < 0 || end <= start || end > len(text)) {
-			t.Fatalf("span [%d,%d) outside the input (len %d)", start, end, len(text))
-		}
+		checkBlockChain(t, nil, data, which, la)
 	})
+}
+
+// FuzzBlockChainLogPrefix is FuzzBlockChainMatchesWholeScan for a trigger
+// behind a literal log prefix (keyTriggerLiteral), which the scans skip on
+// the following lines.
+func FuzzBlockChainLogPrefix(f *testing.F) {
+	compose := func(lines ...string) []byte {
+		return []byte(strings.Join(lines, "\napi-1  | ") + "\n")
+	}
+	f.Add([]byte("api-1  | "), compose("RSA PRIVATE KEY-----", pemB64LineA, pemB64LineB, "-----END RSA PRIVATE KEY-----", "done"), uint8(0), uint16(300))
+	f.Add([]byte("api-1  | "), compose("3: ssh-rsa", "Public-Lines: 1", pemB64LineC, "Private-Lines: 2", pemB64LineA, pemB64LineB, "Private-MAC: 00"), uint8(1), uint16(200))
+	f.Add([]byte("Oct 21 12:00:00 host app[123]: "), []byte("PGP PRIVATE KEY BLOCK-----\nOct 21 12:00:01 host app[123]: Version: 1\nOct 21 12:00:01 host app[123]: \nOct 21 12:00:02 host app[123]: "+pemB64LineA+"\nOct 21 12:00:03 host app[123]: -----END PGP PRIVATE KEY BLOCK-----\n"), uint8(0), uint16(260))
+	f.Add([]byte("2026-10-21T12:00:00.000000001Z "), []byte("EC PRIVATE KEY-----\r\n2026-10-21T12:00:00.000000002Z "+pemB64LineA+"\r\n2026-10-21T12:00:00.000000003Z -----END EC PRIVATE KEY-----\r\n"), uint8(0), uint16(100))
+	f.Fuzz(func(t *testing.T, prefix, data []byte, which uint8, la uint16) {
+		if len(prefix) > keyFrameMax+2 {
+			prefix = prefix[:keyFrameMax+2]
+		}
+		checkBlockChain(t, prefix, data, which, la)
+	})
+}
+
+// checkBlockChain checks a trigger after prefix, followed by data: see
+// FuzzBlockChainMatchesWholeScan.
+func checkBlockChain(t *testing.T, prefix, data []byte, which uint8, la uint16) {
+	if len(data) > 8<<10 {
+		data = data[:8<<10]
+	}
+	fn := pemBlock
+	if which%2 == 1 {
+		fn = ppkBlock
+	}
+	text := append(append(append([]byte(nil), prefix...), fn.trigger...), data...)
+	trigStart := len(prefix)
+	trigEnd := trigStart + len(fn.trigger)
+	// Windows hold at least one armor header line, as the engine's do
+	// (blockMinStep).
+	lookahead := pemArmorWindowMin + int(la)%1024
+
+	start, end, ok, opened, _ := chainSpan(fn, text, trigStart, lookahead)
+	var wantS, wantE int
+	var wantOK bool
+	if opened {
+		wantS, wantE, wantOK = wholeSpan(fn, text, trigStart)
+		if ok && !wantOK && fn.name == "pem" {
+			// Armor header lines ran to the end of the trigger window:
+			// the chain takes the block as a key (fail-safe) where one
+			// scan of the whole input, seeing no body, does not.
+			ws := max(trigStart-blockLookbehind, 0)
+			wEnd := min(trigEnd+lookahead, len(text))
+			if _, _, st, _, _ := fn.begin(text[ws:wEnd], trigStart-ws, trigEnd-ws, false); st&pemStateArmor == 0 {
+				t.Fatalf("pem lookahead %d: chained (%d,%d) confirmed a block the whole scan rejects", lookahead, start, end)
+			}
+			return
+		}
+	} else {
+		wEnd := min(trigEnd+lookahead, len(text))
+		wantS, wantE, wantOK = wholeSpan(fn, text[:wEnd], trigStart)
+	}
+	longest := 0
+	for _, line := range bytes.Split(text, []byte("\n")) {
+		longest = max(longest, len(line))
+	}
+	over := end - wantE
+	// PPK lines stepped over while a header may still come (within
+	// ppkHeaderReach of the trigger), and past it up to ppkMaxStepLines
+	// of at most ppkMaxStepLine bytes, are masked across windows.
+	extraOK := end <= max(wantE, trigEnd+ppkHeaderReach)+lookahead+longest+ppkMaxStepLines*(ppkMaxStepLine+1)
+	if fn.name == "pem" && over > 0 {
+		extraOK = pemNoBody(text, wantE, end)
+	}
+	if ok != wantOK || ok && (start != wantS || over < 0 || !opened && over != 0 || !extraOK) {
+		t.Fatalf("%s lookahead %d opened=%v: chained (%d,%d,%v), want (%d,%d,%v)", fn.name, lookahead, opened, start, end, ok, wantS, wantE, wantOK)
+	}
+	if ok && (start < 0 || end <= start || end > len(text)) {
+		t.Fatalf("span [%d,%d) outside the input (len %d)", start, end, len(text))
+	}
 }
 
 // TestBlockExtendArbitraryState feeds Extend arbitrary states and windows:

@@ -3,6 +3,21 @@
 All notable changes are documented here. This project follows semantic
 versioning.
 
+## Unreleased
+
+- **Fixed:** PEM and PuTTY keys printed behind a literal per-line log
+  prefix were not detected at all: docker compose's service column
+  (`api-1  | `), `kubectl logs --prefix` (`[pod/web/app] `), `docker logs
+  -t` timestamps and syslog headers (`Oct 21 12:00:00 host app[123]: `).
+  When the trigger line's prefix is no line frame, is at most 64 bytes,
+  holds no line break or backslash and ends with a byte no base64 body
+  holds, the scans skip exactly that many bytes at the start of each
+  following line (and PuTTY's `Private-Lines` header line), as long as
+  those bytes end with the same byte and are followed by base64, an empty
+  line or an END marker. The length and last byte are kept in the block's
+  resume state, so long keys are masked whole across windows. The work
+  per line start stays bounded (at most 66 bytes), so scans stay linear.
+
 ## v0.4.0 — 2026-10-22
 
 - **Fixed:** private keys in string literals escaped by PHP and .NET JSON

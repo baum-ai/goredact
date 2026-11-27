@@ -686,6 +686,88 @@ func keyTriggerPrefix(w []byte, trigStart int) (marker byte, framed bool) {
 	return marker, marker != 0 && trigStart-ls > 1
 }
 
+// A literal line prefix is what a log format prints before every line of
+// output, which the frame grammar does not read: docker compose's service
+// column ("api-1  | "), kubectl logs --prefix ("[pod/web/app] "), docker
+// logs -t timestamps ("2026-10-21T12:00:00.123456789Z ") and syslog headers
+// ("Oct 21 12:00:00 host app[123]: "). Its bytes differ from line to line
+// (a clock), but its length does not: a key printed behind one has the
+// trigger line's prefix length on each of its lines. Scans record that
+// length and the prefix's last byte (keyTriggerLiteral), and at the start
+// of each following line skip exactly that many bytes when they end with
+// the same byte and hold no line break or escape, and what follows is key
+// content (keyLiteralSkip). Both fit in a scan's state: the length is at
+// most keyFrameMax.
+
+// keyTriggerLiteral returns the literal prefix of the line of a trigger at
+// trigStart: its length and last byte, when the line starts at most
+// keyFrameMax bytes before the trigger, what precedes the trigger is no
+// frame and diff marker (keyLinePrefix), holds no line break or escape,
+// and ends with a byte no base64 body holds (a separator such as ' ', '|',
+// ':' or ']'). n is 0 otherwise. The window holds keyLookbehind bytes before
+// the trigger unless it starts at the start of input.
+func keyTriggerLiteral(w []byte, trigStart int) (n int, last byte) {
+	ls, ok := keyLineStart(w, trigStart, trigStart < keyLookbehind)
+	if !ok || trigStart-ls < 1 || trigStart-ls > keyFrameMax {
+		return 0, 0
+	}
+	if _, framed := keyLinePrefix(w, ls, trigStart); framed {
+		return 0, 0
+	}
+	last = w[trigStart-1]
+	if pemBase64[last] || !keyLiteralBytes(w[ls:trigStart]) {
+		return 0, 0
+	}
+	return trigStart - ls, last
+}
+
+// keyLiteralBytes reports whether b can be (part of) a literal prefix: it
+// holds no line break or backslash.
+func keyLiteralBytes(b []byte) bool {
+	for _, c := range b {
+		if c == '\n' || c == '\r' || c == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+// keyLiteralSkip skips the literal prefix of n bytes ending with last (see
+// keyTriggerLiteral) at p, the start of a line: content is where the line's
+// content starts. It is ok when the n bytes hold no line break or escape
+// and end with last, and content holds a base64 byte, a line break (an
+// empty line of the key, as after armor headers) or, with end set, a '-'
+// (a caller checks that it opens an END marker). need reports that the
+// window ends before that is decided. The work is at most n+2 bytes.
+func keyLiteralSkip(w []byte, p, n int, last byte, end bool) (content int, ok, need bool) {
+	content = p + n
+	if n <= 0 || p < 0 {
+		return 0, false, false
+	}
+	if content >= len(w) {
+		// The prefix or the content byte is not in view.
+		if !keyLiteralBytes(w[min(p, len(w)):]) {
+			return 0, false, false
+		}
+		return 0, false, true
+	}
+	if w[content-1] != last || !keyLiteralBytes(w[p:content]) {
+		return 0, false, false
+	}
+	switch c := w[content]; {
+	case pemBase64[c], c == '\n', end && c == '-':
+		return content, true, false
+	case c == '\r':
+		if content+1 >= len(w) {
+			return 0, false, true
+		}
+		if w[content+1] == '\n' {
+			return content, true, false
+		}
+	}
+	return 0, false, false
+}
+
 // keyCutResume returns where a scan may resume when the window ends before
 // the line end at p is decided because of a backslash run (an escaped line
 // break may be any number of backslashes then 'n'): at the start of a
