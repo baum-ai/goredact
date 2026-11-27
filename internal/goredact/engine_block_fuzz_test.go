@@ -117,6 +117,8 @@ func FuzzEngineKeyShapes(f *testing.F) {
 	f.Add([]byte{0, 5, 5, 2}, uint8(0|1<<7))
 	f.Add([]byte{1, 15, 5, 5, 2}, uint8(3|1<<7))
 	f.Add([]byte{11, 13, 12, 5, 5}, uint8(2|1<<3|1<<7))
+	f.Add([]byte{0, 5, 5, 2}, uint8(5|1<<7))
+	f.Add([]byte{1, 15, 5, 5, 2}, uint8(6|1<<7))
 	f.Fuzz(func(t *testing.T, data []byte, shape uint8) {
 		checkEngineBlocks(t, keyShape(blockFuzzInput(data), shape))
 	})
@@ -143,8 +145,8 @@ func keyShape(text []byte, shape uint8) []byte {
 			func(i int) string { return fmt.Sprintf("2026-10-21T12:00:%02d.%09dZ ", i%60, i) },
 			func(i int) string { return fmt.Sprintf("Oct 21 12:00:%02d host app[123]: ", i%60) },
 			func(i int) string { return fmt.Sprintf("Oct  1 09:%02d:00 h sshd[%d]: ", i%60, 4000+i%10) },
-			func(int) string { return "db-1 | " },
-			func(i int) string { return fmt.Sprintf("%-8s| ", fmt.Sprint("w-", i%3)) },
+			func(int) string { return "\x1b[36mdb-1 | \x1b[0m" },
+			rfc3339Nano,
 			func(int) string { return strings.Repeat("x", 63) + " " },
 		}
 	}

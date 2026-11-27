@@ -453,12 +453,108 @@ func TestKeyTriggerLiteral(t *testing.T) {
 		{`a\"b ^-----BEGIN`, 0, 0},                       // an escape
 		{strings.Repeat("x", 64) + " ^-----BEGIN", 0, 0}, // longer than keyFrameMax
 		{strings.Repeat("x", 63) + " ^-----BEGIN", 64, ' '},
+		{"\x1b[36mapi-1  | \x1b[0m^-----BEGIN", 18, 'm'}, // a colour reset after the separator
+		{"\x1b[36mapi-1  |\x1b[0m ^-----BEGIN", 18, ' '},
+		{"key\x1b[0m^-----BEGIN", 0, 0},    // no separator before the escape
+		{"\x1b[0m^-----BEGIN", 0, 0},       // nothing before it
+		{"api-1  | key=^-----BEGIN", 0, 0}, // the line after is not in view
+		{"api-1  | key: ^-----BEGIN", 14, ' '},
 	} {
 		at := strings.IndexByte(tc.line, '^')
 		w := []byte(tc.line[:at] + tc.line[at+1:])
-		n, last := keyTriggerLiteral(w, at)
+		n, last := keyTriggerLiteral(w, at, -1)
 		if n != tc.n || last != tc.last {
 			t.Errorf("%q: got (%d,%q), want (%d,%q)", tc.line, n, last, tc.n, tc.last)
+		}
+	}
+}
+
+// TestKeyTriggerLiteralNextLine: with the line after the trigger line in
+// view, the prefix is the one that line has with key content behind it:
+// the whole of what precedes the trigger, else the longest leading part of
+// it ending with a separator, else the whole when that line has it a few
+// bytes shorter or longer.
+func TestKeyTriggerLiteralNextLine(t *testing.T) {
+	const b64 = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+	for _, tc := range []struct {
+		name       string
+		line, next string // "^" marks the trigger in line
+		n          int
+		last       byte
+	}{
+		{"whole", "api-1  | ^-----BEGIN RSA PRIVATE KEY-----", "api-1  | " + b64, 9, ' '},
+		{"text with a base64 end", "api-1  | PRIVATE_KEY=^-----BEGIN RSA PRIVATE KEY-----", "api-1  | " + b64, 9, ' '},
+		{"text with a separator end", "api-1  | key: ^-----BEGIN RSA PRIVATE KEY-----", "api-1  | " + b64, 9, ' '},
+		{"armor header after", "[pod/web/app] PGP key: ^-----BEGIN PGP PRIVATE KEY BLOCK-----", "[pod/web/app] Comment: Alice <a@b>", 14, ' '},
+		{"empty line, then body", "api-1  | key: ^-----BEGIN PGP PRIVATE KEY BLOCK-----", "api-1  | \napi-1  | " + b64, 9, ' '},
+		{"short base64 behind the whole", "web-2     | CeIDxCBJ1lz ^PuTTY-User-Key-File-3: ssh-rsa", "web-2     | Encryption: none", 12, ' '},
+		{"colour reset, text", "\x1b[36mapi-1  | \x1b[0mkey: ^-----BEGIN RSA PRIVATE KEY-----", "\x1b[36mapi-1  | \x1b[0m" + b64, 18, 'm'},
+		{"a shorter timestamp", "2026-10-21T12:00:01.326255Z ^-----BEGIN RSA PRIVATE KEY-----", "2026-10-21T12:00:02.39Z " + b64, 28, ' '},
+		{"a longer timestamp", "2026-10-21T12:00:01.5Z ^-----BEGIN RSA PRIVATE KEY-----", "2026-10-21T12:00:02.123456789Z " + b64, 23, ' '},
+		{"no prefix on the next line", "PRIVATE_KEY=^-----BEGIN RSA PRIVATE KEY-----", b64, 0, 0},
+		{"label on raw lines", "key: ^-----BEGIN RSA PRIVATE KEY-----", b64, 5, ' '},
+	} {
+		at := strings.IndexByte(tc.line, '^')
+		w := []byte(tc.line[:at] + tc.line[at+1:] + "\n" + tc.next + "\n")
+		n, last := keyTriggerLiteral(w, at, len(tc.line))
+		if n != tc.n || last != tc.last {
+			t.Errorf("%s: got (%d,%q), want (%d,%q)", tc.name, n, last, tc.n, tc.last)
+		}
+	}
+}
+
+func TestKeyLiteralSep(t *testing.T) {
+	for _, tc := range []struct {
+		b   string
+		sep byte
+		ok  bool
+	}{
+		{"api-1  | ", ' ', true},
+		{"api-1  | \x1b[0m", ' ', true},
+		{"api-1  |\x1b[1;32m", '|', true},
+		{"x\x1b[m", 'x', true},
+		{"\x1b[0m", 0, false},
+		{"room", 'm', true},
+		{"[0m", 'm', true}, // no ESC
+		{"", 0, false},
+	} {
+		sep, ok := keyLiteralSep([]byte(tc.b))
+		if sep != tc.sep || ok != tc.ok {
+			t.Errorf("%q: got (%q,%v), want (%q,%v)", tc.b, sep, ok, tc.sep, tc.ok)
+		}
+	}
+}
+
+// TestKeyLiteralNear: a prefix up to keyLiteralSlack bytes shorter or
+// longer, before a base64 line or an END marker only.
+func TestKeyLiteralNear(t *testing.T) {
+	const b64 = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+	const n = len("2026-10-21T12:00:01.123456789Z ")
+	for _, tc := range []struct {
+		name       string
+		w          string
+		end, short bool
+		content    int
+		ok, need   bool
+	}{
+		{"shorter", "2026-10-21T12:00:02.39Z " + b64 + "\n", false, false, 24, true, false},
+		{"no fraction", "2026-10-21T12:00:02Z " + b64 + "\n", false, false, 21, true, false},
+		{"longer", "2026-10-21T12:00:02.1234567891Z " + b64 + "\n", false, false, 32, true, false},
+		{"CRLF", "2026-10-21T12:00:02.39Z " + b64[:20] + "\r\n", false, false, 24, true, false},
+		{"END", "2026-10-21T12:00:02.39Z -----END RSA PRIVATE KEY-----\n", true, false, 24, true, false},
+		{"END without end", "2026-10-21T12:00:02.39Z -----END RSA PRIVATE KEY-----\n", false, false, 0, false, false},
+		{"prose", "2026-10-21T12:00:02.39Z listening on :8080\n", false, false, 0, false, false},
+		{"a word", "2026-10-21T12:00:02.39Z listening\n", false, false, 0, false, false},
+		{"a short last line in a body", "2026-10-21T12:00:02.39Z 2clj+nAmfxun\n", false, true, 24, true, false},
+		{"a header line", "2026-10-21T12:00:02.39Z Proc-Type: 4,ENCRYPTED\n", false, false, 0, false, false},
+		{"empty", "2026-10-21T12:00:02.39Z \n", false, false, 0, false, false},
+		{"too short", "2026-10-21T12:00Z " + b64 + "\n", false, false, 0, false, false},
+		{"cut in the line", "2026-10-21T12:00:02.39Z " + b64[:10], false, false, 24, true, true},
+		{"cut in the prefix", "2026-10-21T12:00:0", false, false, 0, false, true},
+	} {
+		c, ok, need := keyLiteralNear([]byte(tc.w), 0, n, ' ', tc.end, tc.short)
+		if c != tc.content || ok != tc.ok || need != tc.need {
+			t.Errorf("%s: got (%d,%v,%v), want (%d,%v,%v)", tc.name, c, ok, need, tc.content, tc.ok, tc.need)
 		}
 	}
 }

@@ -13,7 +13,10 @@ package validators
 // over a non-final window then stops before the shape and decides it in
 // the next window, which starts at or before it.
 
-import "strings"
+import (
+	"bytes"
+	"strings"
+)
 
 const (
 	// keyFrameMax bounds a line frame, the prefix before a key line's
@@ -688,57 +691,297 @@ func keyTriggerPrefix(w []byte, trigStart int) (marker byte, framed bool) {
 
 // A literal line prefix is what a log format prints before every line of
 // output, which the frame grammar does not read: docker compose's service
-// column ("api-1  | "), kubectl logs --prefix ("[pod/web/app] "), docker
-// logs -t timestamps ("2026-10-21T12:00:00.123456789Z ") and syslog headers
-// ("Oct 21 12:00:00 host app[123]: "). Its bytes differ from line to line
-// (a clock), but its length does not: a key printed behind one has the
-// trigger line's prefix length on each of its lines. Scans record that
-// length and the prefix's last byte (keyTriggerLiteral), and at the start
-// of each following line skip exactly that many bytes when they end with
-// the same byte and hold no line break or escape, and what follows is key
-// content (keyLiteralSkip). Both fit in a scan's state: the length is at
-// most keyFrameMax.
+// column ("api-1  | ", coloured "\x1b[36mapi-1  | \x1b[0m" on a terminal),
+// kubectl logs --prefix ("[pod/web/app] "), docker logs -t timestamps
+// ("2026-10-21T12:00:00.123456789Z ") and syslog headers ("Oct 21 12:00:00
+// host app[123]: "). Its bytes differ from line to line (a clock), but its
+// length does not, or barely: a key printed behind one has the trigger
+// line's prefix length on each of its lines. Scans record that length and
+// the prefix's last byte (keyTriggerLiteral), and at the start of each
+// following line skip exactly that many bytes when they end with the same
+// byte and hold no line break or escape, and what follows is key content
+// (keyLiteralSkip). A line whose prefix is a few bytes shorter or longer
+// (RFC 3339 timestamps with nanoseconds drop trailing zeros) is skipped
+// when the rest of it is body (keyLiteralNear). Both values fit in a
+// scan's state: the length is at most keyFrameMax.
+
+// keyLiteralSlack bounds how much a line's literal prefix may differ in
+// length from the trigger line's (keyLiteralNear): an RFC 3339 timestamp
+// with nanoseconds, as kubectl logs --timestamps prints it, drops trailing
+// zeros, so ".123456789Z" may be as short as "Z", ten bytes less.
+const keyLiteralSlack = 10
+
+// keyLiteralRest bounds how much of a line keyLiteralNear reads to check
+// that it is body: a line of base64 at least that long is one. With the
+// longest prefix and its slack it stays within a PEM scan's
+// pemResumeReserve, so a scan decides it in the window it reads it in.
+const keyLiteralRest = pemPlausibleRun * 3
 
 // keyTriggerLiteral returns the literal prefix of the line of a trigger at
 // trigStart: its length and last byte, when the line starts at most
 // keyFrameMax bytes before the trigger, what precedes the trigger is no
 // frame and diff marker (keyLinePrefix), holds no line break or escape,
-// and ends with a byte no base64 body holds (a separator such as ' ', '|',
-// ':' or ']'). n is 0 otherwise. The window holds keyLookbehind bytes before
-// the trigger unless it starts at the start of input.
-func keyTriggerLiteral(w []byte, trigStart int) (n int, last byte) {
+// and ends with a separator: a byte no base64 body holds (' ', '|', ':',
+// ']'), maybe followed by a colour escape (keyLiteralSep). n is 0
+// otherwise. The window holds keyLookbehind bytes before the trigger
+// unless it starts at the start of input.
+//
+// next is the start of the line after the trigger line, or -1 when it is
+// not in view. That line has the prefix, with key content behind it
+// (keyLiteralFirst). Text may also precede the trigger behind the prefix
+// ("api-1  | PRIVATE_KEY=-----BEGIN"), so when the whole of what precedes
+// it is no prefix that line has, the prefix is the longest leading part of
+// it that ends with a separator and that the line has; failing that, the
+// whole, when the line has it a few bytes shorter or longer
+// (keyLiteralNear), as a timestamp may be. Each of the at most
+// keyFrameMax candidates is checked in constant time, and at most
+// keyLiteralTries of them read the line on.
+func keyTriggerLiteral(w []byte, trigStart, next int) (n int, last byte) {
 	ls, ok := keyLineStart(w, trigStart, trigStart < keyLookbehind)
-	if !ok || trigStart-ls < 1 || trigStart-ls > keyFrameMax {
+	if !ok || trigStart-ls < 1 {
 		return 0, 0
 	}
 	if _, framed := keyLinePrefix(w, ls, trigStart); framed {
 		return 0, 0
 	}
-	last = w[trigStart-1]
-	if pemBase64[last] || !keyLiteralBytes(w[ls:trigStart]) {
-		return 0, 0
+	// clean: the leading bytes of the line that hold no line break or
+	// escape, at most keyFrameMax.
+	clean := 0
+	for clean < min(trigStart-ls, keyFrameMax) && keyLiteralByte(w[ls+clean]) {
+		clean++
 	}
-	return trigStart - ls, last
+	full := 0
+	if clean == trigStart-ls && keyLiteralPrefix(w[ls:trigStart]) {
+		full = clean
+	}
+	if next < 0 || next >= len(w) {
+		return full, keyLiteralLast(w, ls, full)
+	}
+	// The longest candidate the line has with key content behind it, the
+	// whole first: a header line, an END marker or a long base64 line
+	// (keyLitStrong), else one with a short base64 line ("none" behind
+	// "Encryption: " where the label ends with ' ' too).
+	first := keyLiteralLine(w, next)
+	weak := 0
+	if full > 0 {
+		last = w[trigStart-1]
+		switch keyLiteralFirst(w, next, first, full, last) {
+		case keyLitStrong:
+			return full, last
+		case keyLitWeak:
+			weak = full
+		}
+	}
+	tries := 0
+	for k := clean; k >= 1 && tries < keyLiteralTries; k-- {
+		c := w[ls+k-1]
+		if k == full || pemBase64[c] && c != 'm' || !keyLiteralPrefix(w[ls:ls+k]) {
+			continue // a 'm' may end a colour escape
+		}
+		if _, ok := keyLiteralCheck(w, next, k, c, first, true); !ok {
+			continue
+		}
+		tries++
+		switch keyLiteralFirst(w, next, first, k, c) {
+		case keyLitStrong:
+			return k, c
+		case keyLitWeak:
+			if weak == 0 {
+				weak = k
+			}
+		}
+	}
+	if full > 0 {
+		// The line's prefix may be a few bytes shorter or longer.
+		if c, ok, _ := keyLiteralNear(w, next, full, last, true, false); ok && keyLiteralContent(w, c) == keyLitStrong {
+			return full, last
+		}
+	}
+	if weak > 0 {
+		return weak, w[ls+weak-1]
+	}
+	return full, keyLiteralLast(w, ls, full)
+}
+
+// keyLiteralTries bounds the candidate prefixes keyTriggerLiteral reads a
+// line on for, and keyLiteralLineMax how far: a base64 line runs to its
+// line break within that many bytes, unless it is longer (PEM wraps at
+// 64, PuTTY and OpenSSH at 64 or 70).
+const (
+	keyLiteralTries   = 8
+	keyLiteralLineMax = 128
+)
+
+// keyLiteralLast returns the last byte of the literal prefix of n bytes at
+// ls, or 0 without one.
+func keyLiteralLast(w []byte, ls, n int) byte {
+	if n == 0 {
+		return 0
+	}
+	return w[ls+n-1]
+}
+
+// keyLiteralPrefix reports whether b, which holds no line break or escape,
+// ends with a separator (keyLiteralSep).
+func keyLiteralPrefix(b []byte) bool {
+	sep, ok := keyLiteralSep(b)
+	return ok && !pemBase64[sep]
+}
+
+// keyLiteralSep returns the byte a literal prefix b ends with: its last
+// byte, or, when b ends with a colour (SGR) escape sequence, "\x1b[0m" as
+// docker compose prints after "api-1  | ", the byte before it. ok is false
+// when there is none. The work is at most the sequence's length.
+func keyLiteralSep(b []byte) (sep byte, ok bool) {
+	n := len(b)
+	if n == 0 {
+		return 0, false
+	}
+	if b[n-1] != 'm' {
+		return b[n-1], true
+	}
+	j := n - 2
+	for j >= 0 && (isDigit(b[j]) || b[j] == ';') {
+		j--
+	}
+	if j < 1 || b[j] != '[' || b[j-1] != 0x1b {
+		return 'm', true
+	}
+	if j < 2 {
+		return 0, false
+	}
+	return b[j-2], true
+}
+
+// keyLiteralByte reports whether c can be part of a literal prefix: it is
+// no line break or backslash.
+func keyLiteralByte(c byte) bool {
+	return c != '\n' && c != '\r' && c != '\\'
 }
 
 // keyLiteralBytes reports whether b can be (part of) a literal prefix: it
 // holds no line break or backslash.
 func keyLiteralBytes(b []byte) bool {
 	for _, c := range b {
-		if c == '\n' || c == '\r' || c == '\\' {
+		if !keyLiteralByte(c) {
 			return false
 		}
 	}
 	return true
 }
 
+// keyLiteralLine returns how many bytes at p, at most keyFrameMax +
+// keyLiteralSlack, can be a literal prefix (keyLiteralByte).
+func keyLiteralLine(w []byte, p int) int {
+	n := 0
+	for p+n < len(w) && n < keyFrameMax+keyLiteralSlack && keyLiteralByte(w[p+n]) {
+		n++
+	}
+	return n
+}
+
+// How well the line after a trigger line reads as key content behind a
+// candidate literal prefix (keyLiteralFirst).
+const (
+	keyLitNone   = iota // the line has no such prefix, or no key content behind it
+	keyLitWeak          // a short base64 line
+	keyLitStrong        // an armor header line, an END marker or a base64 line of pemPlausibleRun bytes or more
+)
+
+// keyLiteralFirst reports how the line at p, the first after a trigger
+// line, reads behind the literal prefix of n bytes ending with last;
+// clean is keyLiteralLine(w, p). When that line is empty behind the
+// prefix (as after armor headers), the line after it is read. The work is
+// at most two lines' prefixes, keyLiteralLineMax and pemLabelMax bytes.
+func keyLiteralFirst(w []byte, p, clean, n int, last byte) int {
+	c, ok := keyLiteralCheck(w, p, n, last, clean, true)
+	if !ok {
+		return keyLitNone
+	}
+	if w[c] == '\n' || w[c] == '\r' {
+		p2, ok, _ := keyBreak(w, c)
+		if !ok || p2 >= len(w) {
+			return keyLitNone
+		}
+		if c, ok = keyLiteralCheck(w, p2, n, last, keyLiteralLine(w, p2), true); !ok || w[c] == '\n' || w[c] == '\r' {
+			return keyLitNone
+		}
+	}
+	return keyLiteralContent(w, c)
+}
+
+// keyLiteralContent reports how the line content at c reads as key
+// content: an END marker, an armor header line ("Proc-Type: ...",
+// "Comment: ...", "Encryption: ...", which opens with a letter), or a
+// base64 line.
+func keyLiteralContent(w []byte, c int) int {
+	if c >= len(w) {
+		return keyLitNone
+	}
+	if w[c] == '-' {
+		if _, ok := pemEndMarker(w, c); ok {
+			return keyLitStrong
+		}
+		return keyLitNone
+	}
+	if isASCIILetter(w[c]) {
+		j := c + 1
+		for j < len(w) && j-c < pemLabelMax && (isASCIILetter(w[j]) || isDigit(w[j]) || w[j] == '-') {
+			j++
+		}
+		if j < len(w) && w[j] == ':' {
+			return keyLitStrong
+		}
+	}
+	j := c
+	for j < len(w) && j-c < keyLiteralLineMax && pemBase64[w[j]] {
+		j++
+	}
+	switch {
+	case j-c >= keyLiteralLineMax:
+		return keyLitStrong
+	case j == c || j == len(w) || w[j] == '\\':
+		return keyLitNone
+	}
+	if _, ok, _ := keyBreak(w, j); !ok {
+		return keyLitNone // base64 then text: no body line
+	}
+	if j-c >= pemPlausibleRun {
+		return keyLitStrong
+	}
+	return keyLitWeak
+}
+
+// keyLiteralCheck is keyLiteralSkip in a window that holds the content,
+// for a line whose leading clean bytes hold no line break or escape.
+func keyLiteralCheck(w []byte, p, n int, last byte, clean int, end bool) (content int, ok bool) {
+	content = p + n
+	if n <= 0 || n > clean || content >= len(w) || w[content-1] != last {
+		return 0, false
+	}
+	if pemBase64[last] {
+		// A colour escape ends the prefix (keyLiteralSep).
+		if !keyLiteralPrefix(w[p:content]) {
+			return 0, false
+		}
+	}
+	switch c := w[content]; {
+	case pemBase64[c], c == '\n', end && c == '-':
+		return content, true
+	case c == '\r':
+		return content, content+1 < len(w) && w[content+1] == '\n'
+	}
+	return 0, false
+}
+
 // keyLiteralSkip skips the literal prefix of n bytes ending with last (see
 // keyTriggerLiteral) at p, the start of a line: content is where the line's
 // content starts. It is ok when the n bytes hold no line break or escape
-// and end with last, and content holds a base64 byte, a line break (an
-// empty line of the key, as after armor headers) or, with end set, a '-'
-// (a caller checks that it opens an END marker). need reports that the
-// window ends before that is decided. The work is at most n+2 bytes.
+// and end with last (with a colour escape, after a separator), and content
+// holds a base64 byte, a line break (an empty line of the key, as after
+// armor headers) or, with end set, a '-' (a caller checks that it opens an
+// END marker). need reports that the window ends before that is decided.
+// The work is at most n+2 bytes.
 func keyLiteralSkip(w []byte, p, n int, last byte, end bool) (content int, ok, need bool) {
 	content = p + n
 	if n <= 0 || p < 0 {
@@ -754,18 +997,67 @@ func keyLiteralSkip(w []byte, p, n int, last byte, end bool) (content int, ok, n
 	if w[content-1] != last || !keyLiteralBytes(w[p:content]) {
 		return 0, false, false
 	}
-	switch c := w[content]; {
-	case pemBase64[c], c == '\n', end && c == '-':
-		return content, true, false
-	case c == '\r':
-		if content+1 >= len(w) {
-			return 0, false, true
+	if w[content] == '\r' && content+1 == len(w) {
+		return 0, false, true
+	}
+	content, ok = keyLiteralCheck(w, p, n, last, n, end)
+	return content, ok, false
+}
+
+// keyLiteralNear skips a literal prefix at p, the start of a line, that
+// keyLiteralSkip does not: one up to keyLiteralSlack bytes shorter or
+// longer than n that ends with last, the nearest such length first, a
+// shorter one before a longer. It reads one candidate on: the line holds
+// no line break or escape up to it, and the rest of the line is base64 up
+// to its break, or for keyLiteralRest bytes, or, with end set, opens with
+// a '-' (a caller checks that it opens an END marker). A base64 line
+// shorter than pemPlausibleRun, as a word of prose is, counts only with
+// short set (a scan already in a key's body, whose last line may be
+// short). need reports that
+// the window ends before that is decided; a caller decides in a final
+// window what is in view (a line of base64 that the end of input ends is
+// body). The work is at most n + keyLiteralSlack + keyLiteralRest + 2
+// bytes, which a PEM scan's pemResumeReserve holds.
+func keyLiteralNear(w []byte, p, n int, last byte, end, short bool) (content int, ok, need bool) {
+	if n <= 0 || p < 0 || p > len(w) {
+		return 0, false, false
+	}
+	clean := min(keyLiteralLine(w, p), keyFrameMax)
+	// The candidates are not all in view.
+	need = p+clean == len(w) && clean < min(n+keyLiteralSlack, keyFrameMax)+1
+	if q := bytes.Index(w[p:p+clean], pemEndPrefix); q >= 0 {
+		// An END line: its marker, which holds separators, ends the prefix.
+		if c, ok := keyLiteralCheck(w, p, q, last, clean, end); ok && q >= n-keyLiteralSlack && q <= n+keyLiteralSlack {
+			return c, true, need
 		}
-		if w[content+1] == '\n' {
-			return content, true, false
+		return 0, false, need
+	}
+	for d := 1; d <= keyLiteralSlack; d++ {
+		for _, k := range [2]int{n - d, n + d} {
+			c, ok := keyLiteralCheck(w, p, k, last, clean, end)
+			if !ok || w[c] == '\n' || w[c] == '\r' {
+				continue // an empty line keeps no length
+			}
+			if w[c] == '-' {
+				return c, true, need
+			}
+			j := c
+			for j < len(w) && j-c < keyLiteralRest && pemBase64[w[j]] {
+				j++
+			}
+			switch {
+			case j-c >= keyLiteralRest:
+				return c, true, need
+			case j == len(w):
+				return c, true, true
+			}
+			if _, ok, more := keyBreak(w, j); (ok && w[j] != '\\' || more) && (short || j-c >= pemPlausibleRun) {
+				return c, true, need || more
+			}
+			return 0, false, need
 		}
 	}
-	return 0, false, false
+	return 0, false, need
 }
 
 // keyCutResume returns where a scan may resume when the window ends before

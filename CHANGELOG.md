@@ -15,8 +15,18 @@ versioning.
   following line (and PuTTY's `Private-Lines` header line), as long as
   those bytes end with the same byte and are followed by base64, an empty
   line or an END marker. The length and last byte are kept in the block's
-  resume state, so long keys are masked whole across windows. The work
-  per line start stays bounded (at most 66 bytes), so scans stay linear.
+  resume state, so long keys are masked whole across windows. The
+  separator may be followed by a colour reset (`\x1b[0m`, as compose
+  prints on a terminal). Text between the prefix and BEGIN
+  (`api-1  | PRIVATE_KEY=-----BEGIN`) is left out of the prefix when the
+  next line shows where the prefix ends. A line whose prefix is up to 10
+  bytes shorter or longer is skipped when the rest of it is base64 or an
+  END marker, as `kubectl logs --timestamps` prints RFC 3339 nanoseconds
+  without trailing zeros. Where the PEM scan behind a prefix stops short
+  of an END marker, the scan without it runs too, so a log prefix never
+  masks less of a key than the line frame grammar alone. The work per
+  line start stays bounded (at most 66 bytes for a skip, 124 for a retry
+  at another length), so scans stay linear.
 
 ## v0.4.0 — 2026-10-22
 

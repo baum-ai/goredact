@@ -137,6 +137,11 @@ const (
 	// putty-private-key rule's lookahead (TestPPKHeaderReachMatchesSpec).
 	ppkHeaderReach = 16384
 
+	// ppkTriggerLineMax bounds how far past its trigger a PPK file's first
+	// line ends ("PuTTY-User-Key-File-3: ssh-ed25519"), for finding the
+	// next line's literal prefix (keyTriggerLiteral).
+	ppkTriggerLineMax = 128
+
 	// ppkMaxOverflow bounds the base64 lines masked past a Private-Lines
 	// count that is too low (see ppkScanner.overflow).
 	ppkMaxOverflow = 100
@@ -289,13 +294,49 @@ func pemArmorLine(window []byte, end int, escaped, final bool, litLen int, litLa
 		return 0, false, !final
 	}
 	if litLen > 0 {
-		// A log prefix the BEGIN line had (keyTriggerLiteral).
+		// A log prefix the BEGIN line had (keyTriggerLiteral), or one a few
+		// bytes shorter or longer, which keyLiteralNear only finds before
+		// a body line or a '-'.
 		c, ok, need := keyLiteralSkip(window, p, litLen, litLast, false)
+		near := false
+		if !ok && !need {
+			c, ok, need = keyLiteralNear(window, p, litLen, litLast, true, false)
+			near = ok
+		}
 		if need && !final {
 			return 0, false, true
 		}
+		if ok && bytes.Contains(window[p:c], pemDashes) {
+			// A prefix of the wrong length that lands inside an END marker.
+			return 0, false, false
+		}
+		if near && window[c] == '-' {
+			if _, isEnd := pemEndMarker(window, c); !isEnd {
+				ok = false // no END marker: read the line with the frame grammar
+			}
+		}
 		if ok {
-			return pemArmorHeader(window, c, escaped, final)
+			if near {
+				return 0, false, false // a body line or an END marker
+			}
+			if lineEnd, ok, cut := pemArmorHeader(window, c, escaped, final); ok || cut {
+				return lineEnd, ok, cut
+			}
+			// No header behind the prefix. A byte of a raw header line can
+			// match the last byte of a label before BEGIN ("PGP key: " and
+			// "Comment: Alice <a@b>" share a ' ' at offset 8), so a line
+			// that opens with a known armor header is read with the frame
+			// grammar too, as a scan without a literal prefix reads it. Any
+			// other line is not: behind a prefix shaped like a header key
+			// ("worker: MIIE...") the frame grammar would read key lines as
+			// armor headers.
+			known, need := pemArmorKnown(window, p)
+			if need && !final {
+				return 0, false, true
+			}
+			if !known {
+				return 0, false, false
+			}
 		}
 	}
 	// Any diff marker, or none: a header line is masked with the key
@@ -311,6 +352,37 @@ func pemArmorLine(window []byte, end int, escaped, final bool, litLen int, litLa
 		return 0, false, true
 	}
 	return pemArmorHeader(window, p+f, escaped, final)
+}
+
+// pemArmorKeys are the armor header keys of RFC 4880 (PGP) and RFC 1421
+// (encrypted PEM) that pemArmorLine reads on a raw line after a BEGIN line
+// with a literal prefix.
+var pemArmorKeys = [][]byte{
+	[]byte("Version: "), []byte("Comment: "), []byte("Hash: "), []byte("Charset: "),
+	[]byte("MessageID: "), []byte("Proc-Type: "), []byte("DEK-Info: "),
+}
+
+// pemArmorKnown reports whether the line at p opens with a known armor
+// header key, maybe behind a diff marker and a frame as pemArmorLine reads
+// them; need reports that the window ends first.
+func pemArmorKnown(window []byte, p int) (known, need bool) {
+	for k := 0; k < 2 && p < len(window) && diffSides(window[p]) != 0; k++ {
+		p++
+	}
+	f, need := keyFrameLen(window, p, len(window))
+	if need {
+		return false, true
+	}
+	p += f
+	for _, key := range pemArmorKeys {
+		if pemHasAt(window, p, key) {
+			return true, false
+		}
+		if rest := window[p:]; len(rest) < len(key) && bytes.HasPrefix(key, rest) {
+			need = true
+		}
+	}
+	return false, need
 }
 
 // pemArmorHeader parses the "Key: Value" of an armor header line from p,
@@ -561,10 +633,20 @@ func (s *pemScanner) lineStart(window []byte, i int, final bool) (next int, cut 
 	if i < len(window) {
 		if _, isEnd := pemEndMarker(window, i); !isEnd {
 			if s.litLen > 0 {
-				// A log prefix the trigger line had (keyTriggerLiteral).
+				// A log prefix the trigger line had (keyTriggerLiteral), or
+				// one a few bytes shorter or longer (keyLiteralNear).
 				c, ok, need := keyLiteralSkip(window, i, s.litLen, s.litLast, true)
+				if !ok && !need {
+					c, ok, need = keyLiteralNear(window, i, s.litLen, s.litLast, true, s.plausible)
+				}
 				if need && !final {
 					return start, true
+				}
+				if ok && bytes.Contains(window[i:c], pemDashes) {
+					// A prefix of the wrong length that lands inside an END
+					// marker ("x: -----END RSA ..."): read the line with the
+					// frame grammar, which finds the marker.
+					ok = false
 				}
 				if ok {
 					_, isEnd := pemEndMarker(window, c)
@@ -867,8 +949,35 @@ func PEMPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (star
 	if marker := keyTriggerMarker(window, trigStart); marker != 0 {
 		s.diff, s.sides = true, diffSides(marker)
 	} else {
-		s.litLen, s.litLast = keyTriggerLiteral(window, trigStart)
+		next := -1
+		if end, ok, _ := keyBreak(window, labelEnd+len(pemDashes)); ok {
+			next = end
+		}
+		s.litLen, s.litLast = keyTriggerLiteral(window, trigStart, next)
 	}
+	start, end, state, open, ok, atEnd := s.begin(window, trigStart, labelEnd, final)
+	if s.litLen == 0 || ok && (open || atEnd) {
+		return start, end, state, open, ok
+	}
+	// A literal prefix only adds to what the frame grammar finds: when the
+	// scan behind it does not reach an END marker or the window's end, the
+	// scan without it runs too and the block takes the further end. Behind
+	// a prefix shaped like an armor header ("worker: "), the frame grammar
+	// reads key lines as armor headers, which may hold any bytes, so it
+	// reads on through output interleaved with the key where a literal
+	// skip stops.
+	s = pemScanner{lastB64End: -1, nl: true, frameEnd: -1}
+	start2, end2, state2, open2, ok2, _ := s.begin(window, trigStart, labelEnd, final)
+	if ok2 && (!ok || open2 || end2 > end) {
+		return start2, end2, state2, open2, ok2
+	}
+	return start, end, state, open, ok
+}
+
+// begin scans a PEM block whose BEGIN label ends at labelEnd, for
+// PEMPrivateKeyBegin. atEnd reports that the block closed at its END
+// marker.
+func (s *pemScanner) begin(window []byte, trigStart, labelEnd int, final bool) (start, end int, state uint64, open, ok, atEnd bool) {
 	body := labelEnd + len(pemDashes)
 	s.armor = true
 	if body < len(window) && window[body] == '\\' {
@@ -880,7 +989,7 @@ func PEMPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (star
 		// long behind a private-key BEGIN line is taken as a key (masking
 		// is the safe side) and followed into the next window.
 		resume, st := s.resumeAt(window, body, s.state())
-		return trigStart, resume, st, true, true
+		return trigStart, resume, st, true, true, false
 	}
 
 	limit := -1
@@ -893,27 +1002,27 @@ func PEMPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (star
 		if !s.plausible {
 			// Marker text with no body between BEGIN and END is
 			// prose/template text, not a key.
-			return 0, 0, 0, false, false
+			return 0, 0, 0, false, false, false
 		}
-		return trigStart, pos, 0, false, true
+		return trigStart, pos, 0, false, true, true
 	case pemStopOpen:
 		resume, st := s.pemOpen(window, pos)
-		return trigStart, resume, st, true, true
+		return trigStart, resume, st, true, true, false
 	}
 	s.closeRun() // close a run cut off by the end of the window
 	if stop == pemStopWindow && !final && s.plausible {
 		// The body only became plausible at the end of the window: it is
 		// confirmed, and may go on in the next one.
 		resume, st := s.openAt(window, pos)
-		return trigStart, resume, st, true, true
+		return trigStart, resume, st, true, true, false
 	}
 	if s.plausible {
 		// Fail-safe: no END marker, but plausible body material followed
 		// the header — confirm through the last base64 byte seen rather
 		// than risk leaking a truncated key.
-		return trigStart, s.lastB64End, 0, false, true
+		return trigStart, s.lastB64End, 0, false, true, false
 	}
-	return 0, 0, 0, false, false
+	return 0, 0, 0, false, false, false
 }
 
 // pemOpen reports the resume point and state of a scan that stopped open
@@ -931,6 +1040,23 @@ func (s *pemScanner) pemOpen(window []byte, pos int) (resume int, state uint64) 
 // fail-safe end, or — when the body runs past this window too — to the
 // next resume point.
 func PEMPrivateKeyExtend(window []byte, state uint64, final bool) (end int, next uint64, open bool) {
+	end, next, open, atEnd := pemExtend(window, state, final)
+	const lit = 0x7f<<pemStateLitAt | 0xff<<pemStateLitLastAt
+	if open || atEnd || state&lit == 0 {
+		return end, next, open
+	}
+	// As in PEMPrivateKeyBegin, the scan without the literal prefix runs
+	// too when the scan behind it stops short of an END marker.
+	end2, next2, open2, _ := pemExtend(window, state&^lit, final)
+	if open2 || end2 > end {
+		return end2, next2, open2
+	}
+	return end, next, open
+}
+
+// pemExtend is PEMPrivateKeyExtend for one reading of the line prefixes.
+// atEnd reports that the block closed at its END marker.
+func pemExtend(window []byte, state uint64, final bool) (end int, next uint64, open, atEnd bool) {
 	limit := -1
 	if !final && len(window) > pemResumeReserve {
 		limit = len(window) - pemResumeReserve
@@ -942,10 +1068,10 @@ func PEMPrivateKeyExtend(window []byte, state uint64, final bool) (end int, next
 		pos, open := s.armorScan(window, 0, final)
 		if open {
 			if pos == 0 {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
 			resume, st := s.resumeAt(window, pos, s.state())
-			return resume, st, true
+			return resume, st, true, false
 		}
 		i = pos
 		s.snap = s.state()
@@ -957,9 +1083,9 @@ func PEMPrivateKeyExtend(window []byte, state uint64, final bool) (end int, next
 		j := bsRunEnd(window, 0)
 		if j == len(window) {
 			if final || j == 0 {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
-			return j, state, true
+			return j, state, true, false
 		}
 		kind, e, _ := keyEscapeAfter(window, j)
 		switch kind {
@@ -970,7 +1096,7 @@ func PEMPrivateKeyExtend(window []byte, state uint64, final bool) (end int, next
 			s.snap = s.state()
 		case escSep, escLF:
 			if !s.closeRun() {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
 			i = e
 			if kind == escLF {
@@ -978,37 +1104,37 @@ func PEMPrivateKeyExtend(window []byte, state uint64, final bool) (end int, next
 				if cut {
 					// Decide the line start in the next window, which
 					// starts there.
-					return e, s.state()&^(3<<pemStatePrevAt) | pemStateLineNL, true
+					return e, s.state()&^(3<<pemStatePrevAt) | pemStateLineNL, true, false
 				}
 				i = next
 			}
 		case escNeed:
 			if final || j == 0 {
-				return 0, 0, false
+				return 0, 0, false, false
 			}
-			return j, state, true
+			return j, state, true, false
 		default:
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 	case s.nl && !inArmor:
 		// The window starts a line: a hunk header the previous window cut,
 		// or a line whose start it already read the same way.
 		next, cut := s.lineStart(window, 0, final)
 		if cut {
-			return 0, 0, false
+			return 0, 0, false, false
 		}
 		i = next
 	}
 	pos, stop := s.scan(window, i, limit, final)
 	switch stop {
 	case pemStopEnd:
-		return pos, 0, false
+		return pos, 0, false, true
 	case pemStopOpen:
 		if resume, st := s.pemOpen(window, pos); resume > 0 {
-			return resume, st, true
+			return resume, st, true, false
 		}
 	}
-	return s.lastB64End, 0, false
+	return s.lastB64End, 0, false, false
 }
 
 // PPK scanner state layout (see ppkScanner.stateAt).
@@ -1487,8 +1613,12 @@ func (s *ppkScanner) head(window []byte, p int, final bool) (l ppkLine, ok, cut 
 		}
 	} else {
 		if s.litLen > 0 {
-			// A log prefix the trigger line had (keyTriggerLiteral).
+			// A log prefix the trigger line had (keyTriggerLiteral), or
+			// one a few bytes shorter or longer (keyLiteralNear).
 			c, ok, need := keyLiteralSkip(window, p, s.litLen, s.litLast, false)
+			if !ok && !need {
+				c, ok, need = keyLiteralNear(window, p, s.litLen, s.litLast, false, s.plausible)
+			}
 			if need && !final {
 				return l, false, true
 			}
@@ -1604,7 +1734,8 @@ func ppkTriggerSides(window []byte, trigStart int) (sides [2]bool, marked, loose
 //
 // With litLen set (an unmarked trigger behind a log prefix,
 // keyTriggerLiteral), the header may also open a line behind a literal
-// prefix of that length (keyLiteralSkip).
+// prefix of that length (keyLiteralSkip), or up to keyLiteralSlack bytes
+// shorter or longer (keyLiteralNear).
 func ppkFindHeader(window []byte, from int, allow [2]bool, marked, loose bool, litLen int, litLast byte) (at int, marker byte, ok bool) {
 	for from < len(window) {
 		rel := bytes.Index(window[from:], ppkPrivateLines)
@@ -1618,6 +1749,13 @@ func ppkFindHeader(window []byte, from int, allow [2]bool, marked, loose bool, l
 			}
 		}
 		if ls, ok := keyLineStart(window, at, false); ok {
+			if k := at - ls; litLen > 0 && k != litLen && k >= litLen-keyLiteralSlack && k <= litLen+keyLiteralSlack {
+				// A literal prefix a few bytes shorter or longer
+				// (keyLiteralNear), opening the header line.
+				if c, ok, _ := keyLiteralSkip(window, ls, k, litLast, false); ok && c == at {
+					return at, 0, true
+				}
+			}
 			if m, ok := keyLinePrefix(window, ls, at); ok {
 				if m == 0 && (!marked || loose) {
 					return at, 0, true
@@ -1693,7 +1831,11 @@ func PuTTYPrivateKeyBegin(window []byte, trigStart, trigEnd int, final bool) (st
 	var litLen int
 	var litLast byte
 	if !marked {
-		litLen, litLast = keyTriggerLiteral(window, trigStart)
+		next := -1
+		if at := bytes.IndexByte(window[trigEnd:min(len(window), trigEnd+ppkTriggerLineMax)], '\n'); at >= 0 {
+			next = trigEnd + at + 1
+		}
+		litLen, litLast = keyTriggerLiteral(window, trigStart, next)
 	}
 	secStart, marker, found := ppkFindHeader(window, trigEnd, allow, marked, loose, litLen, litLast)
 	if !found {

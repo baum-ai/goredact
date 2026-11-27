@@ -339,6 +339,14 @@ func FuzzBlockChainLogPrefix(f *testing.F) {
 	f.Add([]byte("api-1  | "), compose("3: ssh-rsa", "Public-Lines: 1", pemB64LineC, "Private-Lines: 2", pemB64LineA, pemB64LineB, "Private-MAC: 00"), uint8(1), uint16(200))
 	f.Add([]byte("Oct 21 12:00:00 host app[123]: "), []byte("PGP PRIVATE KEY BLOCK-----\nOct 21 12:00:01 host app[123]: Version: 1\nOct 21 12:00:01 host app[123]: \nOct 21 12:00:02 host app[123]: "+pemB64LineA+"\nOct 21 12:00:03 host app[123]: -----END PGP PRIVATE KEY BLOCK-----\n"), uint8(0), uint16(260))
 	f.Add([]byte("2026-10-21T12:00:00.000000001Z "), []byte("EC PRIVATE KEY-----\r\n2026-10-21T12:00:00.000000002Z "+pemB64LineA+"\r\n2026-10-21T12:00:00.000000003Z -----END EC PRIVATE KEY-----\r\n"), uint8(0), uint16(100))
+	// A colour reset after the separator, text before the trigger, and
+	// RFC 3339 timestamps that drop trailing zeros (ENG-1415 review).
+	f.Add([]byte("\x1b[36mapi-1  | \x1b[0m"), []byte("RSA PRIVATE KEY-----\n\x1b[36mapi-1  | \x1b[0m"+pemB64LineA+"\n\x1b[36mapi-1  | \x1b[0m-----END RSA PRIVATE KEY-----\n"), uint8(0), uint16(200))
+	f.Add([]byte("api-1  | PRIVATE_KEY="), compose("RSA PRIVATE KEY-----", pemB64LineA, pemB64LineB, "-----END RSA PRIVATE KEY-----", "done"), uint8(0), uint16(300))
+	f.Add([]byte("api-1  | key: "), compose("3: ssh-rsa", "Encryption: none", "Public-Lines: 1", pemB64LineC, "Private-Lines: 2", pemB64LineA, pemB64LineB, "Private-MAC: 00"), uint8(1), uint16(200))
+	f.Add([]byte("2026-10-21T12:00:00.12Z "), []byte("RSA PRIVATE KEY-----\n2026-10-21T12:00:01.123456789Z "+pemB64LineA+"\n2026-10-21T12:00:02Z "+pemB64LineB+"\n2026-10-21T12:00:03.5Z -----END RSA PRIVATE KEY-----\n"), uint8(0), uint16(150))
+	f.Add([]byte("2026-10-21T12:00:00.12Z "), []byte("2: ssh-rsa\n2026-10-21T12:00:01.1Z Encryption: none\n2026-10-21T12:00:02.123456789Z Private-Lines: 2\n2026-10-21T12:00:03Z "+pemB64LineA+"\n2026-10-21T12:00:04.98Z "+pemB64LineB+"\n"), uint8(1), uint16(150))
+	f.Add([]byte("PGP key: "), []byte("PGP PRIVATE KEY BLOCK-----\nComment: Alice Example <alice@example.com>\n\n"+pemB64LineA+"\n=AbCd\n-----END PGP PRIVATE KEY BLOCK-----\n"), uint8(0), uint16(200))
 	f.Fuzz(func(t *testing.T, prefix, data []byte, which uint8, la uint16) {
 		if len(prefix) > keyFrameMax+2 {
 			prefix = prefix[:keyFrameMax+2]
