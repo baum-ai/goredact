@@ -261,13 +261,23 @@ func TestEngineBlockWorkIsLinear(t *testing.T) {
 		"4 KiB reads":  func(int) int { return 4096 },
 		"random reads": func(int) int { return 1 + rng.Intn(20000) },
 	}
-	for name, input := range map[string]string{"long key": pgp, "nested markers": nested.String()} {
+	syslog := func(i int) string { return fmt.Sprintf("Oct 21 12:%02d:%02d host app[123]: ", i/60%60, i%60) }
+	// Behind a log prefix, a nested BEGIN line ends the open block at its
+	// prefix (it is no key content) and starts a new one: many markers,
+	// but no key line leaks and the work stays linear.
+	for name, input := range map[string]string{
+		"long key":                         pgp,
+		"nested markers":                   nested.String(),
+		"long key behind a log prefix":     shapeConst("api-1  | ", pgp),
+		"nested markers behind log prefix": shapePrefix(nested.String(), syslog),
+	} {
+		oneMarker := name != "nested markers behind log prefix"
 		for readName, sizes := range reads {
 			where := name + ", " + readName
 			e := mustEngine(t, Config{})
 			beginBytes, extendBytes := countingBlocks(e)
 			out, stats := redactAll(t, e, &chunkedReader{data: []byte(input), sizes: sizes})
-			if strings.Count(out, DefaultMarker) != 1 || strings.Contains(out, lines[0]) {
+			if oneMarker && strings.Count(out, DefaultMarker) != 1 || strings.Contains(out, lines[0]) {
 				t.Fatalf("%s: want one marker for the whole block, got %d", where, strings.Count(out, DefaultMarker))
 			}
 			// Extend reads each byte about once (windows overlap by at most

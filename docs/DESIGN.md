@@ -59,8 +59,26 @@ heading). A line's diff marker comes before its frame (`+> `) or after the
 frame's line number or quote marker (`    18→-`, `> +`). Their lookbehind
 (72 bytes) holds the trigger line's frame, its diff marker and the line
 break before them, so a marked line is recognised behind a frame
-(`+> -----BEGIN`). A PuTTY section whose `Private-Lines` count is too low
-takes up to 100 further base64 lines up to its `Private-MAC` line.
+(`+> -----BEGIN`). A trigger line whose prefix is no frame but a log
+prefix of up to 64 bytes ending in a separator (docker compose's
+`api-1  | `, `kubectl logs --prefix`'s `[pod/web/app] `, a `docker logs -t`
+timestamp, a syslog header) sets a literal prefix: on each following line
+the scans skip exactly that many bytes when they hold no line break or
+escape, end with the same byte, and are followed by base64, an empty line
+or an END marker. The bytes may differ from line to line (a clock); the
+length and the last byte, kept in the block's resume state, may not,
+except that a line whose prefix is up to 10 bytes shorter or longer is
+skipped when the rest of it is base64 or an END marker (RFC 3339
+nanoseconds drop trailing zeros). The separator may be followed by a
+colour escape (`\x1b[0m`). Text between the prefix and BEGIN
+(`api-1  | PRIVATE_KEY=-----BEGIN`) is told apart by the next line: the
+prefix is the longest leading part of the trigger line's that ends in a
+separator and that the next line has before key content; a raw armor
+header line after such a line (`Comment: ...`) is still read as one. A
+literal prefix only adds: when the PEM scan behind one stops short of an END marker, the
+scan without it runs too and the block takes the further end. A PuTTY
+section whose `Private-Lines` count is too low takes up to 100 further
+base64 lines up to its `Private-MAC` line.
 
 ### `internal/ahocorasick`
 
